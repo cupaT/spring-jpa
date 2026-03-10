@@ -5,11 +5,9 @@ import com.example.springjpa.adapters.jpa.entity.toEntity
 import com.example.springjpa.adapters.jpa.repository.UserJpaRepository
 import com.example.springjpa.application.port.UserRepositoryPort
 import com.example.springjpa.domain.model.User
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Repository
 
 @Repository
-@ConditionalOnProperty(name = ["app.data-provider"], havingValue = "db", matchIfMissing = true)
 class UserJpaRepositoryAdapter(
     private val userJpaRepository: UserJpaRepository,
 ) : UserRepositoryPort {

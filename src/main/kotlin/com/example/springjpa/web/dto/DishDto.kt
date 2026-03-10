@@ -35,24 +35,27 @@ data class DishResponse(
     val price: BigDecimal,
     @field:JsonProperty("isAvailable")
     val isAvailable: Boolean,
+    val restaurantId: Long,
 )
 
-fun DishCreateRequest.toDomain(): Dish =
+fun DishCreateRequest.toDomain(restaurantId: Long): Dish =
     Dish(
         id = 0,
         name = this.name,
         description = this.description,
         price = this.price,
         isAvailable = this.isAvailable,
+        restaurantId = restaurantId,
     )
 
-fun DishUpdateRequest.toDomain(id: Long): Dish =
+fun DishUpdateRequest.toDomain(id: Long, restaurantId: Long): Dish =
     Dish(
         id = id,
         name = this.name,
         description = this.description,
         price = this.price,
         isAvailable = this.isAvailable,
+        restaurantId = restaurantId,
     )
 
 fun Dish.toResponse(): DishResponse =
@@ -62,4 +65,5 @@ fun Dish.toResponse(): DishResponse =
         description = this.description,
         price = this.price,
         isAvailable = this.isAvailable,
+        restaurantId = this.restaurantId,
     )

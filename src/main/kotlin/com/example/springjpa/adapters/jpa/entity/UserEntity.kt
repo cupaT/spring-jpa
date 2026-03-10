@@ -6,6 +6,7 @@ import jakarta.persistence.Entity
 import jakarta.persistence.GeneratedValue
 import jakarta.persistence.GenerationType
 import jakarta.persistence.Id
+import jakarta.persistence.OneToMany
 import jakarta.persistence.Table
 
 @Entity
@@ -15,17 +16,20 @@ class UserEntity(
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     var id: Long? = null,
 
-    @Column(nullable = false, unique = true)
+    @Column(name = "email", nullable = false, unique = true)
     var email: String = "",
 
-    @Column(nullable = false)
+    @Column(name = "first_name", nullable = false)
     var firstName: String = "",
 
-    @Column(nullable = false)
+    @Column(name = "last_name", nullable = false)
     var lastName: String = "",
 
-    @Column(nullable = false)
+    @Column(name = "is_active", nullable = false)
     var active: Boolean = true,
+
+    @OneToMany(mappedBy = "user")
+    var orders: MutableList<OrderEntity> = mutableListOf(),
 )
 
 fun UserEntity.toDomain(): User =

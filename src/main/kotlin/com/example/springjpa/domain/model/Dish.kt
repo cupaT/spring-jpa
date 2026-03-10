@@ -8,4 +8,5 @@ data class Dish(
     val description: String,
     val price: BigDecimal,
     val isAvailable: Boolean,
+    val restaurantId: Long,
 )

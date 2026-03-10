@@ -17,7 +17,7 @@ jobs:
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
+          java-version: '17'
           distribution: 'temurin'
 
       - name: Install jq
@@ -26,11 +26,23 @@ jobs:
       - name: Grant scripts permition
         run: chmod +x ./mvnw ./.test/run-test.sh
 
+      - name: Load .env
+        run: cat .env >> "$GITHUB_ENV"
+
+      - name: Start PostgreSQL
+        run: docker compose up -d
+
       - name: Compile Spring app
         run: ./mvnw clean package
 
       - name: Run Spring app
-        run: java -jar ./target/*.jar &
+        run: java -jar ./target/*.jar --server.port=${{ env.SERVER_PORT }} &
 
       - name: Run tests
         run: ./.test/run-test.sh
+        env:
+          BASE_URL: http://localhost:${{ env.SERVER_PORT }}
+
+      - name: Stop PostgreSQL
+        if: always()
+        run: docker compose down -v
