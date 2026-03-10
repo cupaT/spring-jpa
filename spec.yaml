@@ -1,9 +1,10 @@
 openapi: 3.0.3
 info:
-  title: Lab 3 API Specification
+  title: Lab 4 API Specification
   version: 1.0.0
   description: |
-    Спецификация эндпоинтов для лабораторной работы №3.
+    Спецификация эндпоинтов для лабораторной работы №4.
+    Включает эндпоинты из ЛР-3 (Users, Dishes) и новые (Restaurants, Orders).
     Реализуйте API строго по этому контракту.
 
 servers:
@@ -11,9 +12,13 @@ servers:
 
 tags:
   - name: Users
+  - name: Restaurants
   - name: Dishes
+  - name: Orders
 
 paths:
+  # ── Users (из ЛР-3, без изменений) ──
+
   /api/v1/users:
     get:
       tags: [Users]
@@ -33,9 +38,9 @@ paths:
       operationId: createUser
       summary: Создать пользователя или вернуть существующего
       description: |
-        Если пользователь с тем же уникальным ключом уже существует,
+        Если пользователь с тем же email уже существует,
         вернуть существующую сущность и код 200.
-        Если пользователя еще нет, создать новую сущность и вернуть код 201.
+        Если пользователя еще нет, создать и вернуть код 201.
       requestBody:
         required: true
         content:
@@ -130,6 +135,189 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  # ── Restaurants (новое в ЛР-4) ──
+
+  /api/v1/restaurants:
+    get:
+      tags: [Restaurants]
+      operationId: listRestaurants
+      summary: Получить список ресторанов
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RestaurantResponse"
+    post:
+      tags: [Restaurants]
+      operationId: createRestaurant
+      summary: Создать ресторан
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RestaurantCreateRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestaurantResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/restaurants/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [Restaurants]
+      operationId: getRestaurantById
+      summary: Получить ресторан по id
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestaurantResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags: [Restaurants]
+      operationId: updateRestaurant
+      summary: Обновить ресторан
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RestaurantUpdateRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestaurantResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Restaurants]
+      operationId: deleteRestaurant
+      summary: Удалить ресторан
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/restaurants/{id}/dishes:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID ресторана
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [Restaurants]
+      operationId: getRestaurantDishes
+      summary: Получить меню ресторана (список блюд)
+      description: |
+        Возвращает все блюда, принадлежащие данному ресторану.
+        Должно загружаться без N+1 (через @EntityGraph или JOIN FETCH).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DishResponse"
+        "404":
+          description: Restaurant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/restaurants/{restaurantId}/dishes:
+    parameters:
+      - name: restaurantId
+        in: path
+        required: true
+        description: ID ресторана, в который добавляется блюдо
+        schema:
+          type: integer
+          format: int64
+    post:
+      tags: [Dishes]
+      operationId: createDishInRestaurant
+      summary: Добавить блюдо в ресторан
+      description: |
+        Создаёт новое блюдо и привязывает его к указанному ресторану.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DishCreateRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DishResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Restaurant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Dishes (обновлено: DishResponse теперь включает restaurantId) ──
+
   /api/v1/dishes:
     get:
       tags: [Dishes]
@@ -151,39 +339,6 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/DishResponse"
-    post:
-      tags: [Dishes]
-      operationId: createDish
-      summary: Создать блюдо или вернуть существующее
-      description: |
-        Если блюдо с тем же уникальным ключом уже существует,
-        вернуть существующую сущность и код 200.
-        Если блюда еще нет, создать новую сущность и вернуть код 201.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/DishCreateRequest"
-      responses:
-        "200":
-          description: Existing dish returned
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DishResponse"
-        "201":
-          description: Created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DishResponse"
-        "400":
-          description: Validation error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
 
   /api/v1/dishes/{id}:
     parameters:
@@ -253,8 +408,137 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  # ── Orders (новое в ЛР-4) ──
+
+  /api/v1/orders:
+    get:
+      tags: [Orders]
+      operationId: listOrders
+      summary: Получить список заказов
+      parameters:
+        - name: userId
+          in: query
+          required: false
+          description: Фильтр по ID пользователя
+          schema:
+            type: integer
+            format: int64
+        - name: status
+          in: query
+          required: false
+          description: Фильтр по статусу заказа
+          schema:
+            type: string
+            enum: [PENDING, CONFIRMED, DELIVERED, CANCELLED]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OrderResponse"
+    post:
+      tags: [Orders]
+      operationId: createOrder
+      summary: Создать заказ
+      description: |
+        Создаёт заказ для указанного пользователя с перечисленными блюдами.
+        Статус нового заказа — PENDING.
+        Все указанные dishIds должны существовать, иначе — ошибка 400.
+        userId должен существовать, иначе — ошибка 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderCreateRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "400":
+          description: Validation error (user or dish not found, empty dish list)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orders/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [Orders]
+      operationId: getOrderById
+      summary: Получить заказ по id
+      description: |
+        Возвращает заказ с полной информацией: пользователь и список блюд.
+        Должно загружаться без N+1 (через @EntityGraph или JOIN FETCH).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orders/{id}/status:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    patch:
+      tags: [Orders]
+      operationId: updateOrderStatus
+      summary: Обновить статус заказа
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderStatusUpdateRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "400":
+          description: Invalid status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
+    # ── Users (из ЛР-3, без изменений) ──
+
     UserCreateRequest:
       type: object
       required: [email, firstName, lastName]
@@ -309,6 +593,46 @@ components:
         isActive:
           type: boolean
 
+    # ── Restaurants (новое в ЛР-4) ──
+
+    RestaurantCreateRequest:
+      type: object
+      required: [name, address]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          example: "Pizza Place"
+        address:
+          type: string
+          minLength: 1
+          example: "ул. Пушкина, д. 10"
+
+    RestaurantUpdateRequest:
+      type: object
+      required: [name, address]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        address:
+          type: string
+          minLength: 1
+
+    RestaurantResponse:
+      type: object
+      required: [id, name, address]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        address:
+          type: string
+
+    # ── Dishes (обновлено: добавлен restaurantId) ──
+
     DishCreateRequest:
       type: object
       required: [name, description, price, isAvailable]
@@ -349,7 +673,7 @@ components:
 
     DishResponse:
       type: object
-      required: [id, name, description, price, isAvailable]
+      required: [id, name, description, price, isAvailable, restaurantId]
       properties:
         id:
           type: integer
@@ -363,6 +687,59 @@ components:
           format: double
         isAvailable:
           type: boolean
+        restaurantId:
+          type: integer
+          format: int64
+
+    # ── Orders (новое в ЛР-4) ──
+
+    OrderCreateRequest:
+      type: object
+      required: [userId, dishIds]
+      properties:
+        userId:
+          type: integer
+          format: int64
+          example: 1
+        dishIds:
+          type: array
+          minItems: 1
+          items:
+            type: integer
+            format: int64
+          example: [1, 2, 3]
+
+    OrderStatusUpdateRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [PENDING, CONFIRMED, DELIVERED, CANCELLED]
+          example: CONFIRMED
+
+    OrderResponse:
+      type: object
+      required: [id, userId, status, createdAt, dishes]
+      properties:
+        id:
+          type: integer
+          format: int64
+        userId:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [PENDING, CONFIRMED, DELIVERED, CANCELLED]
+        createdAt:
+          type: string
+          format: date-time
+        dishes:
+          type: array
+          items:
+            $ref: "#/components/schemas/DishResponse"
+
+    # ── Errors ──
 
     ErrorResponse:
       type: object
@@ -376,4 +753,4 @@ components:
           example: Not Found
         message:
           type: string
-          example: User with id=10 not found
+          example: Restaurant with id=10 not found
