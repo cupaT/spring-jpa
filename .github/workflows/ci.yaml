@@ -17,7 +17,7 @@ jobs:
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
 
       - name: Install jq
@@ -32,6 +32,23 @@ jobs:
       - name: Start PostgreSQL
         run: docker compose up -d
 
+      - name: Wait for PostgreSQL
+        run: |
+          echo "Waiting for PostgreSQL to be ready..."
+          RETRIES=30
+          COUNT=0
+          until docker compose exec -T postgres pg_isready -U postgres; do
+            COUNT=$((COUNT + 1))
+            if [ $COUNT -ge $RETRIES ]; then
+              echo "PostgreSQL did not become ready in time"
+              docker compose logs postgres
+              exit 1
+            fi
+            echo "Waiting... ($COUNT/$RETRIES)"
+            sleep 2
+          done
+          echo "PostgreSQL is ready!"
+
       - name: Compile Spring app
         run: ./mvnw clean package
 
@@ -42,7 +59,3 @@ jobs:
         run: ./.test/run-test.sh
         env:
           BASE_URL: http://localhost:${{ env.SERVER_PORT }}
-
-      - name: Stop PostgreSQL
-        if: always()
-        run: docker compose down -v

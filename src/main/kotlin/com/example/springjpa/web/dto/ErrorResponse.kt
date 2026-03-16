@@ -1,7 +1,9 @@
 package com.example.springjpa.web.dto
 
-data class ErrorResponse(
+import java.time.LocalDateTime
+
+open class ErrorResponse(
     val status: Int,
-    val error: String,
-    val message: String,
+    val message: String? = null,
+    val timestamp: LocalDateTime = LocalDateTime.now(),
 )

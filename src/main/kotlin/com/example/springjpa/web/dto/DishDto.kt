@@ -2,27 +2,27 @@ package com.example.springjpa.web.dto
 
 import com.example.springjpa.domain.model.Dish
 import com.fasterxml.jackson.annotation.JsonProperty
-import jakarta.validation.constraints.DecimalMin
 import jakarta.validation.constraints.NotBlank
+import jakarta.validation.constraints.Positive
 import java.math.BigDecimal
 
 data class DishCreateRequest(
-    @field:NotBlank
+    @field:NotBlank(message = "Dish name must not be blank")
     val name: String,
-    @field:NotBlank
+    @field:NotBlank(message = "Description must not be blank")
     val description: String,
-    @field:DecimalMin(value = "0.0", inclusive = true)
+    @field:Positive(message = "Price must be greater than 0")
     val price: BigDecimal,
     @field:JsonProperty("isAvailable")
     val isAvailable: Boolean,
 )
 
 data class DishUpdateRequest(
-    @field:NotBlank
+    @field:NotBlank(message = "Dish name must not be blank")
     val name: String,
-    @field:NotBlank
+    @field:NotBlank(message = "Description must not be blank")
     val description: String,
-    @field:DecimalMin(value = "0.0", inclusive = true)
+    @field:Positive(message = "Price must be greater than 0")
     val price: BigDecimal,
     @field:JsonProperty("isAvailable")
     val isAvailable: Boolean,

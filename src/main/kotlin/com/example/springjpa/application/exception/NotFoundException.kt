@@ -1,3 +1,3 @@
 package com.example.springjpa.application.exception
 
-class NotFoundException(message: String) : RuntimeException(message)
+class NotFoundException(message: String) : AppException(message)

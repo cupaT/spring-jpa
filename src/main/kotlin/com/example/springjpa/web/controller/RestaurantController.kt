@@ -8,6 +8,7 @@ import com.example.springjpa.web.dto.RestaurantUpdateRequest
 import com.example.springjpa.web.dto.toDomain
 import com.example.springjpa.web.dto.toResponse
 import jakarta.validation.Valid
+import jakarta.validation.constraints.Min
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
@@ -17,9 +18,11 @@ import org.springframework.web.bind.annotation.PutMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import org.springframework.validation.annotation.Validated
 
 @RestController
 @RequestMapping("/api/v1/restaurants")
+@Validated
 class RestaurantController(
     private val restaurantService: RestaurantService,
     private val dishService: DishService,
@@ -32,20 +35,20 @@ class RestaurantController(
         ResponseEntity.status(201).body(restaurantService.create(request.toDomain()).toResponse())
 
     @GetMapping("/{id}")
-    fun getRestaurantById(@PathVariable id: Long): RestaurantResponse = restaurantService.getById(id).toResponse()
+    fun getRestaurantById(@PathVariable @Min(1) id: Long): RestaurantResponse = restaurantService.getById(id).toResponse()
 
     @PutMapping("/{id}")
     fun updateRestaurant(
-        @PathVariable id: Long,
+        @PathVariable @Min(1) id: Long,
         @Valid @RequestBody request: RestaurantUpdateRequest,
     ): RestaurantResponse = restaurantService.update(id, request.toDomain(id)).toResponse()
 
     @DeleteMapping("/{id}")
-    fun deleteRestaurant(@PathVariable id: Long): ResponseEntity<Void> {
+    fun deleteRestaurant(@PathVariable @Min(1) id: Long): ResponseEntity<Void> {
         restaurantService.delete(id)
         return ResponseEntity.noContent().build()
     }
 
     @GetMapping("/{id}/dishes")
-    fun getRestaurantDishes(@PathVariable id: Long) = dishService.listByRestaurantId(id).map { it.toResponse() }
+    fun getRestaurantDishes(@PathVariable @Min(1) id: Long) = dishService.listByRestaurantId(id).map { it.toResponse() }
 }

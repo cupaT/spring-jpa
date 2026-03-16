@@ -7,8 +7,10 @@ import com.example.springjpa.web.dto.UserUpdateRequest
 import com.example.springjpa.web.dto.toDomain
 import com.example.springjpa.web.dto.toResponse
 import jakarta.validation.Valid
+import jakarta.validation.constraints.Min
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
+import org.springframework.validation.annotation.Validated
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
@@ -20,6 +22,7 @@ import org.springframework.web.bind.annotation.RestController
 
 @RestController
 @RequestMapping("/api/v1/users")
+@Validated
 class UserController(
     private val userService: UserService,
 ) {
@@ -34,16 +37,16 @@ class UserController(
     }
 
     @GetMapping("/{id}")
-    fun getUserById(@PathVariable id: Long): UserResponse = userService.getById(id).toResponse()
+    fun getUserById(@PathVariable @Min(1) id: Long): UserResponse = userService.getById(id).toResponse()
 
     @PutMapping("/{id}")
     fun updateUser(
-        @PathVariable id: Long,
+        @PathVariable @Min(1) id: Long,
         @Valid @RequestBody request: UserUpdateRequest,
     ): UserResponse = userService.update(id, request.toDomain(id)).toResponse()
 
     @DeleteMapping("/{id}")
-    fun deleteUser(@PathVariable id: Long): ResponseEntity<Void> {
+    fun deleteUser(@PathVariable @Min(1) id: Long): ResponseEntity<Void> {
         userService.delete(id)
         return ResponseEntity.noContent().build()
     }

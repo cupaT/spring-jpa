@@ -1,11 +1,12 @@
 openapi: 3.0.3
 info:
-  title: Lab 4 API Specification
+  title: Lab 5 API Specification
   version: 1.0.0
   description: |
-    Спецификация эндпоинтов для лабораторной работы №4.
-    Включает эндпоинты из ЛР-3 (Users, Dishes) и новые (Restaurants, Orders).
-    Реализуйте API строго по этому контракту.
+    Спецификация эндпоинтов для лабораторной работы №5.
+    Контракт эндпоинтов не меняется относительно ЛР-4.
+    Изменения: единый формат ошибок (ErrorResponse, ValidationErrorResponse),
+    валидация входных данных, обработка конфликтов (409).
 
 servers:
   - url: http://localhost:8080
@@ -17,7 +18,7 @@ tags:
   - name: Orders
 
 paths:
-  # ── Users (из ЛР-3, без изменений) ──
+  # ── Users ──
 
   /api/v1/users:
     get:
@@ -65,7 +66,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/ValidationErrorResponse"
 
   /api/v1/users/{id}:
     parameters:
@@ -114,7 +115,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/ValidationErrorResponse"
         "404":
           description: Not found
           content:
@@ -135,7 +136,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  # ── Restaurants (новое в ЛР-4) ──
+  # ── Restaurants ──
 
   /api/v1/restaurants:
     get:
@@ -170,6 +171,12 @@ paths:
                 $ref: "#/components/schemas/RestaurantResponse"
         "400":
           description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "409":
+          description: Restaurant with this name already exists
           content:
             application/json:
               schema:
@@ -222,7 +229,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/ValidationErrorResponse"
         "404":
           description: Not found
           content:
@@ -308,7 +315,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/ValidationErrorResponse"
         "404":
           description: Restaurant not found
           content:
@@ -316,7 +323,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  # ── Dishes (обновлено: DishResponse теперь включает restaurantId) ──
+  # ── Dishes ──
 
   /api/v1/dishes:
     get:
@@ -387,7 +394,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/ValidationErrorResponse"
         "404":
           description: Not found
           content:
@@ -408,7 +415,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  # ── Orders (новое в ЛР-4) ──
+  # ── Orders ──
 
   /api/v1/orders:
     get:
@@ -466,7 +473,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/ValidationErrorResponse"
 
   /api/v1/orders/{id}:
     parameters:
@@ -537,7 +544,7 @@ paths:
 
 components:
   schemas:
-    # ── Users (из ЛР-3, без изменений) ──
+    # ── Users ──
 
     UserCreateRequest:
       type: object
@@ -593,7 +600,7 @@ components:
         isActive:
           type: boolean
 
-    # ── Restaurants (новое в ЛР-4) ──
+    # ── Restaurants ──
 
     RestaurantCreateRequest:
       type: object
@@ -631,7 +638,7 @@ components:
         address:
           type: string
 
-    # ── Dishes (обновлено: добавлен restaurantId) ──
+    # ── Dishes ──
 
     DishCreateRequest:
       type: object
@@ -691,7 +698,7 @@ components:
           type: integer
           format: int64
 
-    # ── Orders (новое в ЛР-4) ──
+    # ── Orders ──
 
     OrderCreateRequest:
       type: object
@@ -739,18 +746,33 @@ components:
           items:
             $ref: "#/components/schemas/DishResponse"
 
-    # ── Errors ──
+    # ── Errors (обновлено в ЛР-5) ──
 
     ErrorResponse:
       type: object
-      required: [status, error, message]
+      required: [status]
       properties:
         status:
           type: integer
           example: 404
-        error:
-          type: string
-          example: Not Found
         message:
           type: string
-          example: Restaurant with id=10 not found
+          nullable: true
+          example: "Ресторан с id=10 не найден"
+        timestamp:
+          type: string
+          format: date-time
+
+    ValidationErrorResponse:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - type: object
+          required: [errors]
+          properties:
+            errors:
+              type: object
+              additionalProperties:
+                type: string
+              example:
+                name: "Название не может быть пустым"
+                price: "Цена должна быть больше 0"

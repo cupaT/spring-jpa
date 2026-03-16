@@ -16,6 +16,8 @@ class RestaurantJpaRepositoryAdapter(
 
     override fun findById(id: Long): Restaurant? = restaurantJpaRepository.findById(id).orElse(null)?.toDomain()
 
+    override fun existsByName(name: String): Boolean = restaurantJpaRepository.existsByNameIgnoreCase(name)
+
     override fun findAll(): List<Restaurant> = restaurantJpaRepository.findAll().map { it.toDomain() }
 
     override fun update(restaurant: Restaurant): Restaurant? {

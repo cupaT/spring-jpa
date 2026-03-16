@@ -1,14 +1,12 @@
-# Лабораторная работа №4
+# Лабораторная работа №5
 
-## Связи в модели данных. PostgreSQL и миграции с Flyway
+## Обработка ошибок. Валидация. Логгирование
 
 ---
 
 ## Цель работы
 
-Расширить проект доставки еды из ЛР-3: добавить сущности `Restaurant` и `Order`, реализовать связи между сущностями (
-`@OneToMany`, `@ManyToMany`), перейти с H2 на PostgreSQL, внедрить Flyway для управления схемой БД и оптимизировать
-загрузку связанных данных через `@EntityGraph`.
+Добавить в проект доставки еды из ЛР-4: валидацию входных данных (`@Valid`), единую обработку ошибок через `@RestControllerAdvice` с иерархией кастомных исключений и структурированное логгирование ключевых событий.
 
 ---
 
@@ -20,514 +18,517 @@
 
 ## Теоретический блок
 
-### 1) PostgreSQL через docker-compose
+### 1) Зачем нужна обработка ошибок
 
-В ЛР-3 использовалась H2. Теперь переходим на PostgreSQL, более подходящей для продакшена СУБД.
+Сейчас в вашем проекте ошибки возвращаются как попало: Spring сам формирует ответ с трейсом, статусы непредсказуемы, клиент не знает, чего ожидать.
 
-Ниже представлен примерный `docker-compose.yaml` для PostgreSQL.  
-`Да`, для дальнейшей работы вам понадобится `Docker`. Рассмотрим процесс установки для различных ОС.
-
-#### Linux (Ubuntu / Fedora)
-
-Для Debian-like дистрибутивов выполните следующие шаги:
-```bash
-# Удалить старые версии (если были)
-sudo apt remove docker docker-engine docker.io containerd runc
-
-# Установить зависимости
-sudo apt update
-sudo apt install ca-certificates curl gnupg
-
-# Добавить GPG-ключ Docker
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-
-# Добавить репозиторий
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-# Установить Docker Engine + Docker Compose
-sudo apt update
-sudo apt install docker-ce docker-ce-cli containerd.io docker-compose-plugin
+Пример того, что Spring вернёт по умолчанию при необработанном исключении:
+```json
+{
+  "timestamp": "2025-03-07T12:00:00.000+00:00",
+  "status": 500,
+  "error": "Internal Server Error",
+  "trace": "java.lang.RuntimeException: Something went wrong\n\tat com.example...",
+  "path": "/api/v1/restaurants"
+}
 ```
 
-Для RedHat-based систем аналогичное действие будет выглядеть следующим образом^
-```bash
-sudo dnf install dnf-plugins-core
-sudo dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
-sudo dnf install docker-ce docker-ce-cli containerd.io docker-compose-plugin
+Проблемы:
+- Клиент видит внутренности сервера (`trace`) — это небезопасно.
+- Формат меняется от ошибки к ошибке.
+- Нет полезной информации о том, **что именно** пошло не так.
+
+Цель — сделать так, чтобы API **всегда** возвращал предсказуемый формат ошибки с правильным HTTP-статусом.
+
+---
+
+### 2) Единый формат ответа об ошибке
+
+Определим DTO для ошибок. Базовый класс — `ErrorResponse`, для ошибок валидации — наследник с деталями по полям:
+
+```kotlin
+open class ErrorResponse(
+    val status: Int,
+    val message: String? = null,
+    val timestamp: LocalDateTime = LocalDateTime.now()
+)
+
+class ValidationErrorResponse(
+    status: Int,
+    message: String? = null,
+    val errors: Map<String, String>,
+    timestamp: LocalDateTime = LocalDateTime.now()
+) : ErrorResponse(status, message, timestamp)
 ```
 
-После установки на любой из дистрибутивов нужно выполнить следующие шаги:
-```bash
-# Запустить Docker
-sudo systemctl start docker
-sudo systemctl enable docker
+> `data class` нельзя наследовать от другого `data class`, поэтому используем обычные классы с `open`.
 
-# Добавить текущего пользователя в группу docker (чтобы не писать sudo)
-sudo usermod -aG docker $USER
-
-# Перелогиниться или выполнить
-newgrp docker
-
-# Проверить
-docker --version
-docker compose version
+Пример ответа при ошибке валидации:
+```json
+{
+  "status": 400,
+  "message": "Ошибка валидации",
+  "errors": {
+    "name": "Название не может быть пустым",
+    "price": "Цена должна быть больше 0"
+  },
+  "timestamp": "2025-03-07T12:00:00"
+}
 ```
 
 ---
 
-#### Windows
+### 3) Иерархия кастомных исключений
 
-Вариант 1: Docker Desktop (рекомендуется)
+У приложения должна быть собственная надстройка исключений над системными. Бизнес-логика не должна бросать голые Spring/JPA-исключения — она бросает свои, а `@ControllerAdvice` маппит их на HTTP-статусы.
 
-1. Для начала установить `WSL 2`. Для этого нужно открыть PowerShell от имени администратора и выполнить команду ниже
-```shell
-wsl --install
+Удобный подход — `sealed class`:
 
-# Ну или если первый вариант не работает
-wsl.exe --install
-```
-2. Скачать установщик: https://www.docker.com/products/docker-desktop/
-3. Запустить `.exe`, следовать инструкциям.
-4. При установке выбрать **WSL 2 backend** (не Hyper-V).
-5. После установки перезагрузить компьютер.
-6. Запустить Docker Desktop, дождаться зелёного индикатора.
+```kotlin
+sealed class AppException(message: String) : RuntimeException(message)
 
-Вариант 2: Docker Engine через WSL 2
+class NotFoundException(message: String) : AppException(message)
 
-Если не хотите Docker Desktop:
-1. Установить WSL 2 (см выше).
-2. Установить Ubuntu из Microsoft Store.
-3. Внутри Ubuntu выполнить команды из секции **Linux (Ubuntu)** выше.
+class AlreadyExistsException(message: String) : AppException(message)
 
-После установки сделайте проверку работоспособности Docker (PowerShell или WSL-терминал).
-```bash
-docker --version
-docker compose version
-docker run hello-world
+class InvalidOrderStateException(message: String) : AppException(message)
 ```
 
-Далее создадим `docker-compose.yaml` в корне проекта, чтобы работать с PostgreSQL без непосредственной установки на
-устройство.
+Преимущества `sealed class`:
+- Компилятор Kotlin гарантирует, что `when`-выражение покрывает все варианты.
+- Иерархия закрыта — нельзя случайно добавить наследника в другом модуле.
+- Каждый тип исключения несёт **семантику**, а не просто сообщение.
 
-**`docker-compose.yaml`:**
+Использование в сервисном слое:
 
-```yaml
-services:
-  postgres:
-    image: postgres:17
-    environment:
-      POSTGRES_DB: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+```kotlin
+@Service
+class RestaurantService(
+    private val restaurantRepository: RestaurantRepositoryPort
+) {
+    fun getById(id: Long): Restaurant {
+        return restaurantRepository.findById(id)
+            ?: throw NotFoundException("Ресторан с id=$id не найден")
+    }
 
-volumes:
-  pgdata:
+    fun create(command: CreateRestaurantCommand): Restaurant {
+        if (restaurantRepository.existsByName(command.name)) {
+            throw AlreadyExistsException("Ресторан '${command.name}' уже существует")
+        }
+        return restaurantRepository.save(command.toEntity())
+    }
+}
 ```
 
-Далее проверим корректность файла, выполнив команды:
+> Обратите внимание: сервис не знает про HTTP-статусы. Он бросает доменное исключение, а маппинг на `404`/`409` происходит в `@ControllerAdvice`.
 
-```bash
-# В корне проекта
-docker compose up -d
+---
 
-# Проверить, что контейнер запущен
-docker compose ps
+### 4) Глобальный обработчик ошибок: @RestControllerAdvice
 
-# Подключиться к БД (опционально)
-docker compose exec postgres psql -U postgres
+`@RestControllerAdvice` — это специальный бин Spring, который перехватывает исключения, выброшенные из контроллеров, и формирует ответ.
 
-# Остановить
-docker compose down
+```kotlin
+@RestControllerAdvice
+class GlobalExceptionHandler {
+    
+    @ExceptionHandler(AppException::class)
+    fun handleCommon(e: AppException): ResponseEntity<ErrorResponse> {        
+        val status = when (e) {
+            is NotFoundException -> status = HttpStatus.NOT_FOUND
+            is AlreadyExistsException -> status = HttpStatus.CONFLICT
+            is InvalidOrderStateException,
+            is BadCredentialsException -> status = Http.BAD_REQUEST
+            // ...
+        }
+        
+        return ResponseEntity
+            .status(status)
+            .body(ErrorResponse(status.value(), e.message))
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException::class)
+    fun handleValidationExceptions(ex: MethodArgumentNotValidException): ResponseEntity<ValidationErrorResponse> {
+        val errors = ex.bindingResult.fieldErrors.associate {
+            it.field to (it.defaultMessage ?: "Incorrect value")
+        }
+        
+        return ResponseEntity
+            .status(HttpStatus.BAD_REQUEST)
+            .body(ValidationErrorResponse(
+                HttpStatus.BAD_REQUEST, 
+                "Method parameter validation error", 
+                errors
+            ))
+    }
+
+    @ExceptionHandler(Exception::class)
+    fun handleUnexpected(e: Exception): ResponseEntity<ErrorResponse> {
+        return ResponseEntity
+            .status(HttpStatus.INTERNAL_SERVER_ERROR)
+            .body(ErrorResponse(500, "Internal server error"))
+    }
+}
 ```
 
-Затем необходимо в `application.yaml` указать `url`, `username` и `password` для субд.
+Порядок обработки: Spring ищет **наиболее конкретный** обработчик. `Exception::class` — это fallback, он сработает только если ни один другой не подошёл.
 
-**`application.yaml`:**
+> Важно: в `handleUnexpected` не возвращаем `e.message` клиенту — оно может содержать внутренности системы. Вместо этого логируем полную ошибку (см. раздел про логгирование).
 
-```yaml
-spring:
-  datasource:
-    url: jdbc:postgresql://localhost:5432/postgres
-    username: postgres
-    password: postgres
-  jpa:
-    hibernate:
-      ddl-auto: validate
-    show-sql: true
-```
+---
 
-Важно: `ddl-auto` теперь `validate`, а не `update` — схемой управляет Flyway.
+### 5) Валидация входных данных: @Valid, @Validated + jakarta.validation
 
-#### Смена порта приложения
-
-По умолчанию Spring Boot запускается на порту `8080`. Если он занят (например, другим сервисом), порт можно изменить.
-
-**Напрямую в `application.yaml`:**
-
-```yaml
-server:
-  port: 8081
-```
-
-**Через `.env` файл:**
-
-Чтобы не хардкодить порт, можно вынести его в переменную окружения. Создайте файл `.env` в корне проекта:
-```
-SERVER_PORT=8081
-```
-
-А в `application.yaml` сослаться на неё:
-```yaml
-server:
-  port: ${SERVER_PORT:8080}
-```
-
-Здесь `8080` — значение по умолчанию, если переменная не задана.
-
-> Этот же подход (`${ПЕРЕМЕННАЯ:значение_по_умолчанию}`) работает для любых настроек — datasource, flyway и т.д.
-
-**Как подтянуть переменные из `.env` при запуске:**
-
-Spring Boot **не** читает `.env` файл автоматически. Нужно загрузить переменные самостоятельно.
-
-Через Maven-плагин:
-```bash
-# Linux / macOS
-export $(cat .env | xargs) && ./mvnw spring-boot:run
-
-# Windows (PowerShell)
-Get-Content .env | ForEach-Object { $k, $v = $_ -split '=', 2; [System.Environment]::SetEnvironmentVariable($k, $v) }; ./mvnw spring-boot:run
-```
-
-Через скомпилированный JAR:
-```bash
-# Сначала собираем
-./mvnw clean package -DskipTests
-
-# Запуск с загрузкой переменных из .env
-export $(cat .env | xargs) && java -jar target/*.jar
-
-# Или можно передать порт напрямую без .env файла
-java -jar target/*.jar --server.port=8081
-```
-
-> **PS**: В процессе выполнения этой лабораторной работы вы установите WSL. По сути у вас теперь есть Linux-терминал в вашей Windows, и многие команды вы можете выполнять в нем
+Валидация — это проверка данных на входе в контроллер, **до** того как они попадут в сервисный слой.
 
 **Зависимость в `pom.xml`:**
 
 ```xml
-
 <dependency>
-    <groupId>org.postgresql</groupId>
-    <artifactId>postgresql</artifactId>
-    <scope>runtime</scope>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-validation</artifactId>
 </dependency>
 ```
 
+#### Аннотации на DTO
+
+```kotlin
+data class CreateRestaurantRequest(
+    @field:NotBlank(message = "Название не может быть пустым")
+    @field:Size(min = 2, max = 100, message = "Название: от 2 до 100 символов")
+    val name: String,
+
+    @field:NotBlank(message = "Адрес не может быть пустым")
+    val address: String
+)
+
+data class CreateDishRequest(
+    @field:NotBlank(message = "Название не может быть пустым")
+    val name: String,
+
+    @field:Min(value = 1, message = "Цена должна быть больше 0")
+    val price: BigDecimal,
+
+    val description: String? = null
+)
+
+data class CreateOrderRequest(
+    @field:NotNull(message = "userId обязателен")
+    val userId: Long,
+
+    @field:NotEmpty(message = "Заказ должен содержать хотя бы одно блюдо")
+    val dishIds: List<Long>
+)
+```
+
+> Обратите внимание: в Kotlin нужно писать `@field:NotBlank`, а не просто `@NotBlank`. Без `@field:` аннотация попадёт на параметр конструктора, а не на поле, и Spring её не увидит.
+
+#### @Valid vs @Validated
+
+`@Valid` (jakarta) и `@Validated` (Spring) — две аннотации для включения валидации. Они похожи, но работают по-разному.
+
+**`@Valid`** — ставится перед `@RequestBody`. Проверяет поля объекта:
+
+```kotlin
+@PostMapping
+fun createRestaurant(@Valid @RequestBody request: CreateRestaurantRequest): ResponseEntity<RestaurantResponse> {
+    // Если валидация не пройдена, Spring выбросит MethodArgumentNotValidException
+    // до входа в тело метода. Его поймает наш GlobalExceptionHandler.
+    val restaurant = restaurantService.create(request.toCommand())
+    return ResponseEntity.status(HttpStatus.CREATED).body(restaurant.toResponse())
+}
+```
+
+**`@Validated`** — ставится на **класс контроллера**. Позволяет валидировать `@PathVariable` и `@RequestParam` напрямую:
+
+```kotlin
+@RestController
+@RequestMapping("/api/v1/restaurants")
+@Validated
+class RestaurantController(private val restaurantService: RestaurantService) {
+
+    @GetMapping("/{id}")
+    fun getById(@PathVariable @Min(1) id: Long): ResponseEntity<RestaurantResponse> {
+        // Без @Validated на классе аннотация @Min на @PathVariable не сработает
+        val restaurant = restaurantService.getById(id)
+        return ResponseEntity.ok(restaurant.toResponse())
+    }
+
+    @GetMapping
+    fun search(
+        @RequestParam @Size(min = 2, message = "Минимум 2 символа для поиска") query: String?
+    ): ResponseEntity<List<RestaurantResponse>> {
+        // ...
+    }
+}
+```
+
+> При провале валидации через `@Validated` Spring выбросит `ConstraintViolationException` (а не `MethodArgumentNotValidException`). Его тоже нужно обработать в `GlobalExceptionHandler`.
+
+```kotlin
+@ExceptionHandler(ConstraintViolationException::class)
+fun handleConstraintViolation(e: ConstraintViolationException): ResponseEntity<ErrorResponse> {
+    return ResponseEntity
+        .status(HttpStatus.BAD_REQUEST)
+        .body(ErrorResponse(400, e.message))
+}
+```
+
+| Что            | `@Valid`                          | `@Validated`                     |
+|:---------------|:----------------------------------|:---------------------------------|
+| Источник       | Jakarta (стандарт)                | Spring (расширение)              |
+| Куда ставить   | Перед параметром метода           | На класс контроллера             |
+| Что валидирует | `@RequestBody`                    | `@PathVariable`, `@RequestParam` |
+| Исключение     | `MethodArgumentNotValidException` | `ConstraintViolationException`   |
+
+На практике их используют **вместе**: `@Validated` на классе + `@Valid` перед `@RequestBody`.
+
+#### Полезные аннотации
+
+| Аннотация       | Назначение                            | Пример                                |
+|:----------------|:--------------------------------------|:--------------------------------------|
+| `@NotNull`      | Не null                               | `@field:NotNull`                      |
+| `@NotBlank`     | Не null, не пустая, не только пробелы | `@field:NotBlank`                     |
+| `@NotEmpty`     | Не null и не пустая коллекция/строка  | `@field:NotEmpty`                     |
+| `@Size`         | Ограничение длины                     | `@field:Size(min = 2, max = 100)`     |
+| `@Min` / `@Max` | Числовые границы                      | `@field:Min(1)`                       |
+| `@Email`        | Проверка формата email                | `@field:Email`                        |
+| `@Pattern`      | Регулярное выражение                  | `@field:Pattern(regexp = "^[A-Z].*")` |
+| `@Positive`     | Число > 0                             | `@field:Positive`                     |
+
 ---
 
-### 2) Flyway: управление схемой БД
+### 6) Логгирование
 
-Flyway берет готовые SQL-файлы и накатывает их на базу данных в строгом порядке, записывая историю в специальную таблицу (flyway_schema_history).
+Логгирование — это запись событий, происходящих в приложении. Без логов невозможно диагностировать ошибки на проде.
 
-#### Шаг 1. Настройка проекта
+Spring Boot использует `SLF4J` + `Logback` по умолчанию. Дополнительных зависимостей не нужно.
 
-Далее внесем изменения в `pom.xml` для корректной работы с PostgreSQL и Flyway.
+#### Создание логгера
+
+Можно использовать `SLF4J` напрямую, но более предпочтительный подход в Kotlin — библиотека `kotlin-logging`. Она является обёрткой над SLF4J и даёт несколько преимуществ:
+- **Лямбда-синтаксис** — строка лога не вычисляется, если уровень отключён (экономия ресурсов).
+- **Kotlin-идиоматичный API** — никаких `{}` плейсхолдеров, обычная строковая интерполяция.
+- **Компактнее** — не нужно передавать `Class` в `getLogger`.
+
+**Зависимость в `pom.xml`:**
+
 ```xml
-<project>
-    <dependencies>
-
-        <!-- ... -->
-
-        <!-- Ядро Flyway -->
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
-        </dependency>
-
-        <!-- Модуль Flyway для PostgreSQL (обязателен для новых версий!) -->
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-database-postgresql</artifactId>
-        </dependency>
-
-        <!-- Драйвер PostgreSQL -->
-        <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
-            <scope>runtime</scope>
-        </dependency>
-    </dependencies>
-    
-    <build>
-        <plugins>
-            
-            <!-- ... -->
-
-            <plugin>
-                <groupId>org.flywaydb</groupId>
-                <artifactId>flyway-maven-plugin</artifactId>
-                <!-- Версия должна совпадать с версией ядра Flyway в Spring Boot 4 (обычно 12.x) -->
-                <version>12.0.2</version>
-                <configuration>
-                    <url>jdbc:postgresql://localhost:5432/flyway_demo</url>
-                    <user>postgres</user>
-                    <password>password</password>
-                    <!-- Указываем, где лежат скрипты -->
-                    <locations>
-                        <location>filesystem:src/main/resources/db/migration</location>
-                    </locations>
-                </configuration>
-                <dependencies>
-                    <!-- Плагину нужны те же зависимости, что и основному проекту -->
-                    <dependency>
-                        <groupId>org.postgresql</groupId>
-                        <artifactId>postgresql</artifactId>
-                        <version>42.7.2</version>
-                    </dependency>
-                    <!-- И модуль для PostgreSQL для Flyway 10+ -->
-                    <dependency>
-                        <groupId>org.flywaydb</groupId>
-                        <artifactId>flyway-database-postgresql</artifactId>
-                        <version>12.0.2</version>
-                    </dependency>
-                </dependencies>
-            </plugin>
-        </plugins>
-    </build>
-</project>
+<dependency>
+    <groupId>io.github.oshai</groupId>
+    <artifactId>kotlin-logging-jvm</artifactId>
+    <version>7.0.13</version>
+</dependency>
 ```
 
-Затем добавим изменения в `application.yaml`
+**Использование:**
+
+```kotlin
+@Service
+class RestaurantService(
+    private val restaurantRepository: RestaurantRepositoryPort
+) {
+    private val logger = KotlinLogging.logger {}
+    
+    fun getById(id: Long): Restaurant {
+        logger.info { "Запрос ресторана с id=$id" }
+        return restaurantRepository.findById(id)
+            ?: throw NotFoundException("Ресторан с id=$id не найден").also {
+                logger.warn { "Ресторан с id=$id не найден" }
+            }
+    }
+
+    fun create(command: CreateRestaurantCommand): Restaurant {
+        val restaurant = restaurantRepository.save(command.toEntity())
+        logger.info { "Создан ресторан: id=${restaurant.id}, name=${restaurant.name}" }
+        return restaurant
+    }
+}
+```
+
+Для сравнения — тот же код на чистом SLF4J (более многословно):
+```kotlin
+private val logger = LoggerFactory.getLogger(RestaurantService::class.java)
+
+logger.info("Запрос ресторана с id={}", id)  // плейсхолдеры вместо интерполяции
+```
+
+#### Уровни логирования
+
+| Уровень | Когда использовать                                  |
+|:--------|:----------------------------------------------------|
+| `ERROR` | Что-то сломалось, требует внимания                  |
+| `WARN`  | Нештатная ситуация, но приложение работает          |
+| `INFO`  | Ключевые бизнес-события (создан заказ, удалён ресторан) |
+| `DEBUG` | Детали для отладки (значения переменных, SQL)       |
+| `TRACE` | Максимальная детализация (редко используется)       |
+
+#### Настройка уровней в application.yaml
+
+Простой способ — указать уровни прямо в `application.yaml`:
+
 ```yaml
-spring:
-  
-  #  ...
-
-  flyway:
-    # Flyway включен по умолчанию, но можно указать явно
-    enabled: true
-    # Если БД не пустая, но таблицы flyway_schema_history нет, 
-    # baseline-on-migrate позволит начать версионирование
-    baseline-on-migrate: true
-    # Можно явным образом указать путь до директории с миграциями
-    locations:
-      - classpath:/db/migration
+logging:
+  level:
+    root: INFO
+    com.example.delivery: DEBUG
+    org.springframework.web: WARN
+    org.hibernate.SQL: DEBUG
 ```
 
-#### Команды плагина `FlyWay`
+- `root` — общий уровень логирования для всего приложения (по умолчанию `INFO`).
+- `com.example.delivery` — корневой пакет вашего проекта, для него включен `DEBUG`.
+- Остальные пакеты можно переопределить по отдельности (`org.springframework.web: WARN` и т.д.).
 
-* `./mvnw flyway:info` (Информация)
-* `./mvnw flyway:clean` (Очистка)
-* `./mvnw flyway:migrate` (Миграция)
-* `./mvnw flyway:validate` (Проверка миграций)
-* `./mvnw flyway:baseline` (Создание базы данных)
-* `./mvnw flyway:undo` (Откат). 💰 ПЛАТНАЯ ФУНКЦИЯ
+#### Продвинутая настройка: logback-spring.xml
 
-#### Как передавать параметры подключения субд без pom.xml?
-Если не хочется жестко прописывать настройки соединения внутри кода, то их тоже можно указать при запуске команды.
+`application.yaml` подходит для простых случаев. Для более гибкой настройки (формат вывода, запись в файл, ротация логов) используется файл `logback-spring.xml` в `src/main/resources/`:
 
-> Вообще указывать данные для подключения в исходниках `ОЧЕНЬ ПЛОХАЯ ПРАКТИКА`. Вы так можете вынести важные данные
-> на общее обозрение и потерять доступ к ним.
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
 
-```bash
-./mvnw flyway:info \
-  -Dflyway.url=jdbc:postgresql://localhost:5432/flyway_demo \
-  -Dflyway.user=postgres \
-  -Dflyway.password=supersecret
+    <!-- Вывод в консоль -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Вывод в файл с ротацией -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/app.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <!-- Новый файл каждый день -->
+            <fileNamePattern>logs/app.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <!-- Максимальный размер одного файла -->
+            <maxFileSize>10MB</maxFileSize>
+            <!-- Хранить логи за последние 30 дней -->
+            <maxHistory>30</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Уровни для пакетов -->
+    <logger name="com.example.delivery" level="DEBUG"/>
+    <logger name="org.springframework.web" level="WARN"/>
+    <logger name="org.hibernate.SQL" level="DEBUG"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+    </root>
+
+</configuration>
 ```
 
-#### Шаг 2. Создание скрипта миграции
+> Если `logback-spring.xml` присутствует, он **заменяет** настройки логирования из `application.yaml`. Не используйте оба способа одновременно.
 
-Для начала нужно создать скрипт миграции.  
-Формат: `V<Версия>__<Описание>.sql` (Обратите внимание: `ДВА` подчеркивания после версии).
+Элементы паттерна:
+- `%d{...}` — дата и время
+- `%thread` — имя потока
+- `%-5level` — уровень (INFO, WARN...), выровненный по 5 символам
+- `%logger{36}` — имя логгера (обрезанное до 36 символов)
+- `%msg%n` — сообщение и перенос строки
 
-Создадим файл: `src/main/resources/db/migration/V1__create_users_table.sql`
-```sql
--- V1__create_users.sql
-CREATE TABLE users (
-    id BIGSERIAL PRIMARY KEY,
-    username VARCHAR(50) NOT NULL UNIQUE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-```
+#### Логгирование в GlobalExceptionHandler
 
-#### Шаг 3. Создание сущности пользователя
+Особенно важно логировать непредвиденные ошибки — те, что попадают в fallback-обработчик:
 
-Теперь опишем эту таблицу в коде. В Kotlin для JPA-сущностей лучше использовать обычные классы (не data class), так как data class генерирует методы equals/hashCode/toString, которые могут вызывать проблемы с ленивой загрузкой (Lazy Loading) в Hibernate.
-
-Создадим файл User.kt:
 ```kotlin
-@Entity
-@Table(name = "users")
-class User(
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    var id: Long? = null,
-    
-    @Column(name = "username", nullable = false, unique = true)
-    var username: String,
-
-    @Column(name = "created_at", nullable = false, updatable = false)
-    var createdAt: Instant = Instant.now()
-)
+@ExceptionHandler(Exception::class)
+fun handleUnexpected(e: Exception): ResponseEntity<ErrorResponse> {
+    logger.error(e) { "Непредвиденная ошибка" }
+    return ResponseEntity
+        .status(HttpStatus.INTERNAL_SERVER_ERROR)
+        .body(ErrorResponse(500, "Внутренняя ошибка сервера"))
+}
 ```
 
-#### Шаг 4. Изменение сущности и создание новой миграции
-
-Представьте, что через неделю бизнес попросил добавить пользователям `email`.
-> Золотое правило Flyway: Никогда не меняй уже примененные миграции! (Flyway считает их контрольные суммы, и если ты
-> изменишь V1, приложение не запустится с ошибкой checksum mismatch).
-
-Вместо этого мы создаем новую миграцию:
-Файл: `src/main/resources/db/migration/V2__add_email_to_users.sql`
-```sql
-ALTER TABLE users 
-ADD COLUMN email VARCHAR(255);
-
--- Если нужно, можно сразу добавить уникальный индекс
-ALTER TABLE users 
-ADD CONSTRAINT uk_users_email UNIQUE (email);
-```
-
-И обновляем нашу сущность `User.kt`, добавляя новое поле:
-```kotlin
-@Entity
-@Table(name = "users")
-class User(
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    var id: Long? = null,
-    
-    @Column(name = "username", nullable = false, unique = true)
-    var username: String,
-    
-    @Column(name = "email", unique = true)
-    var email: String? = null,
-
-    @Column(name = "created_at", nullable = false, updatable = false)
-    var createdAt: Instant = Instant.now()
-)
-```
-
-#### Шаг 6. Запуск
-
-При старте Spring Boot приложения (например, через команду mvn spring-boot:run или из IDE) произойдет следующее:
-
-* Flyway подключится к БД.
-* Проверит наличие служебной таблицы `flyway_schema_history`. Если её нет — создаст.
-* Посмотрит, какие миграции уже применены.
-* Накатит `V1__create_users_table.sql`.
-* Накатит `V2__add_email_to_users.sql`.
-* После этого запустится Hibernate, который благодаря `ddl-auto: validate` проверит, что класс `User` полностью соответствует таблице users в БД.
+> `logger.error(e) { ... }` — записывает сообщение **и** стек-трейс в лог, но клиенту возвращает только безопасное сообщение.
 
 ---
 
 ## Практическое задание
 
-### 1) Поднимите PostgreSQL
+### 1) Создайте иерархию кастомных исключений
 
-1. Создайте `docker-compose.yaml` с PostgreSQL.
-2. Настройте `application.yaml` с подключением к PostgreSQL.
-3. Убедитесь, что приложение запускается и подключается к БД.
+1. `sealed class AppException` — базовый класс.
+2. `NotFoundException` — ресурс не найден.
+3. `AlreadyExistsException` — конфликт (например, дублирование имени ресторана).
+4. `InvalidOrderStateException` — недопустимый переход статуса заказа.
 
-### 2) Создайте Flyway-миграции
+### 2) Реализуйте @RestControllerAdvice
 
-Создайте SQL-файлы в `resources/db/migration/`:
+Создайте `GlobalExceptionHandler`, который обрабатывает:
 
-1. `V1__create_users.sql` — таблица `users`.
-2. `V2__create_restaurants.sql` — таблица `restaurants`.
-3. `V3__create_dishes.sql` — таблица `dishes` с FK `restaurant_id`.
-4. `V4__create_orders.sql` — таблица `orders` с FK `user_id`.
-5. `V5__create_order_dishes.sql` — промежуточная таблица `order_dishes`.
+1. `NotFoundException` → `404 Not Found`.
+2. `AlreadyExistsException` → `409 Conflict`.
+3. `InvalidOrderStateException` → `400 Bad Request`.
+4. `MethodArgumentNotValidException` → `400 Bad Request` с ошибками по полям.
+5. `Exception` → `500 Internal Server Error` (fallback).
 
-Установите `ddl-auto=validate`.
+Все ответы — в едином формате (`ErrorResponse` / `ValidationErrorResponse`).
 
-### 3) Добавьте новые сущности
+### 3) Добавьте валидацию на DTO
 
-#### `Restaurant`
+Используйте аннотации `jakarta.validation` на всех входных DTO:
 
-1. `id: Long`
-2. `name: String`
-3. `address: String`
-4. Связь `@OneToMany` → `Dish`
+1. `CreateRestaurantRequest` — `name` не пустое, `address` не пустой.
+2. `CreateDishRequest` — `name` не пустое, `price` > 0.
+3. `CreateOrderRequest` — `userId` не null, `dishIds` не пустой.
+4. Используйте `@Valid` в контроллерах перед `@RequestBody`.
 
-#### `Order`
+### 4) Выбросьте кастомные исключения из сервисов
 
-1. `id: Long`
-2. `status: OrderStatus` (enum: `PENDING`, `CONFIRMED`, `DELIVERED`, `CANCELLED`)
-3. `createdAt: LocalDateTime`
-4. Связь `@ManyToOne` → `User`
-5. Связь `@ManyToMany` → `Dish`
+Замените все места, где сервис возвращает `null` или бросает стандартные исключения:
 
-#### Обновление `Dish`
+1. `findById` → если не найдено, бросать `NotFoundException`.
+2. Создание ресторана с дублирующимся именем → `AlreadyExistsException`.
+3. Смена статуса заказа на недопустимый → `InvalidOrderStateException`.
 
-1. Добавьте связь `@ManyToOne` → `Restaurant` (поле `restaurant_id`).
+### 5) Добавьте логгирование
 
-### 4) Реализуйте эндпоинты строго по `spec.yaml`
-
-Реализуйте все эндпоинты, описанные в спецификации:
-
-1. CRUD для `Restaurant`.
-2. Получение меню ресторана (`GET /api/v1/restaurants/{id}/dishes`).
-3. Добавление блюда в ресторан (`POST /api/v1/restaurants/{restaurantId}/dishes`).
-4. Создание и чтение заказов (`POST /api/v1/orders`, `GET /api/v1/orders/{id}`).
-5. Список заказов с фильтрами (`GET /api/v1/orders`).
-6. Обновление статуса заказа (`PATCH /api/v1/orders/{id}/status`).
-
-### 5) Используйте @EntityGraph
-
-1. При загрузке заказа по id — подгружайте блюда и пользователя одним запросом.
-2. При загрузке меню ресторана — подгружайте блюда без N+1.
-3. Убедитесь через `show-sql=true`, что лишних запросов нет.
-
-### 6) Архитектурные требования
-
-1. Сохраните слоистую / Clean Architecture из ЛР-3.
-2. Entity ≠ DTO: явный маппинг между слоями.
+1. Добавьте логгер в сервисный слой и в `GlobalExceptionHandler`.
+2. Логируйте: создание/удаление сущностей (`INFO`), ошибки «не найдено» (`WARN`), непредвиденные ошибки (`ERROR` с трейсом).
+3. Настройте уровни логирования через `logback-spring.xml`.
+4. Настройте запись логов уровня `WARN` и `ERROR` в отдельный файл (appender `FILE`).
 
 ---
 
-## Критерии оценки (максимум 20 баллов)
+## Критерии оценки (максимум 10 баллов)
 
-| Категория                   | Критерий                                                   | Баллы  |
-|:----------------------------|:-----------------------------------------------------------|:------:|
-| Штраф                       | Не проходят автотесты                                      |  -10   |
-| PostgreSQL + docker-compose | БД поднимается, приложение подключается                    |   3    |
-| Flyway                      | Миграции создают полную схему, `ddl-auto=validate`         |   3    |
-| Связи: OneToMany            | `Restaurant → Dish` реализован корректно                   |   2    |
-| Связи: ManyToMany           | `Order ↔ Dish` через `@JoinTable` или промежуточную Entity |   2    |
-| CRUD: Restaurant            | Полный CRUD работает через API                             |   3    |
-| CRUD: Order                 | Создание и чтение заказов с блюдами                        |   3    |
-| @EntityGraph / JOIN FETCH   | N+1 отсутствует при чтении связанных данных                |   2    |
-| Качество решения            | Архитектура, маппинг Entity↔DTO, чистота кода              |   2    |
-| **Итого**                   |                                                            | **20** |
+| Категория             | Критерий                                                     | Баллы  |
+|:----------------------|:-------------------------------------------------------------|:------:|
+| Штраф                 | Не проходят автотесты                                        |   -5   |
+| Кастомные исключения  | Есть sealed-иерархия, используется в сервисах                |   1    |
+| @RestControllerAdvice | Единый обработчик, корректные статусы (400/404/409/500)      |   2    |
+| Валидация DTO         | `@Valid` / `@Validated` + аннотации на входных DTO           |   2    |
+| Ошибки валидации      | `MethodArgumentNotValidException` возвращает ошибки по полям |   2    |
+| Логгирование          | Логгер в сервисах и обработчике ошибок, настроены уровни     |   2    |
+| Качество решения      | Единый формат ответа, чистота кода                           |   1    |
+| **Итого**             |                                                              | **10** |
 
 ---
 
 ## Мини-чеклист перед сдачей
 
-1. `docker-compose up` поднимает PostgreSQL, приложение подключается.
-2. Миграции Flyway создают все таблицы при первом запуске.
-3. CRUD для Restaurant и Dish работает через HTTP.
-4. Создание заказа с указанием блюд работает.
-5. `GET /api/v1/orders/{id}` возвращает заказ с блюдами и информацией о пользователе.
-6. В логах (`show-sql=true`) нет лишних запросов при чтении связанных данных.
-7. `ddl-auto=validate` — Hibernate не меняет схему, только проверяет.
+1. `POST` с невалидным телом возвращает `400` с перечнем ошибок по полям.
+2. `GET /api/v1/restaurants/999999` возвращает `404` в едином формате, а не Spring-трейс.
+3. Создание ресторана с дублирующимся именем возвращает `409`.
+4. Непредвиденная ошибка возвращает `500` без стек-трейса в теле ответа.
+5. В логах видны `INFO`/`WARN`/`ERROR` записи от вашего приложения.
+6. Все прежние CRUD-эндпоинты из ЛР-4 по-прежнему работают.
 
 ---
 
 ## Что почитать
 
-1. [Spring Data JPA Reference](https://docs.spring.io/spring-data/jpa/reference/)
-2. [Flyway Documentation](https://documentation.red-gate.com/flyway)
-3. [Baeldung — JPA One-to-Many](https://www.baeldung.com/hibernate-one-to-many)
-4. [Baeldung — JPA Many-to-Many](https://www.baeldung.com/jpa-many-to-many)
-5. [Baeldung — JPA Entity Graph](https://www.baeldung.com/jpa-entity-graph)
-6. [PostgreSQL + Docker](https://hub.docker.com/_/postgres)
-7. [Spring Boot Flyway Guide](https://www.baeldung.com/database-migrations-with-flyway)
+1. [Spring Boot Error Handling](https://www.baeldung.com/exception-handling-for-rest-with-spring)
+2. [Bean Validation with Spring Boot](https://www.baeldung.com/spring-boot-bean-validation)
+3. [Jakarta Validation Constraints](https://jakarta.ee/specifications/bean-validation/3.0/jakarta-bean-validation-spec-3.0.html)
+4. [SLF4J Manual](https://www.slf4j.org/manual.html)
+5. [kotlin-logging](https://github.com/MicroUtils/kotlin-logging)
+6. [Spring Boot Logging](https://docs.spring.io/spring-boot/reference/features/logging.html)
