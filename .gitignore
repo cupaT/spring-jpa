@@ -1,5 +1,2 @@
-/.idea
-/target/
-/out/
-/build/
-/*.iml
+/.idea/
+/spring-test.iml
