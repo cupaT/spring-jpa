@@ -10,6 +10,7 @@ import jakarta.validation.Valid
 import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.Size
 import org.springframework.http.ResponseEntity
+import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.validation.annotation.Validated
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
@@ -34,6 +35,7 @@ class DishController(
         dishService.list(namePart).map { it.toResponse() }
 
     @PostMapping("/restaurants/{restaurantId}/dishes")
+    @PreAuthorize("hasRole('ADMIN')")
     fun createDishInRestaurant(
         @PathVariable @Min(1) restaurantId: Long,
         @Valid @RequestBody request: DishCreateRequest,
@@ -46,6 +48,7 @@ class DishController(
     fun getDishById(@PathVariable @Min(1) id: Long): DishResponse = dishService.getById(id).toResponse()
 
     @PutMapping("/dishes/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     fun updateDish(
         @PathVariable @Min(1) id: Long,
         @Valid @RequestBody request: DishUpdateRequest,
@@ -55,6 +58,7 @@ class DishController(
     }
 
     @DeleteMapping("/dishes/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     fun deleteDish(@PathVariable @Min(1) id: Long): ResponseEntity<Void> {
         dishService.delete(id)
         return ResponseEntity.noContent().build()

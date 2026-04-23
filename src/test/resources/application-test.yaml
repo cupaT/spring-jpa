@@ -10,3 +10,7 @@ logging:
   level:
     root: WARN
     com.example.springjpa: WARN
+
+jwt:
+  secret: test-secret-key-for-jwt-signing-that-is-long-enough
+  expiration-ms: 86400000

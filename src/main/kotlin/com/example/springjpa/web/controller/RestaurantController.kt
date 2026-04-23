@@ -10,6 +10,7 @@ import com.example.springjpa.web.dto.toResponse
 import jakarta.validation.Valid
 import jakarta.validation.constraints.Min
 import org.springframework.http.ResponseEntity
+import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
@@ -31,6 +32,7 @@ class RestaurantController(
     fun listRestaurants(): List<RestaurantResponse> = restaurantService.list().map { it.toResponse() }
 
     @PostMapping
+    @PreAuthorize("hasRole('ADMIN')")
     fun createRestaurant(@Valid @RequestBody request: RestaurantCreateRequest): ResponseEntity<RestaurantResponse> =
         ResponseEntity.status(201).body(restaurantService.create(request.toDomain()).toResponse())
 
@@ -38,12 +40,14 @@ class RestaurantController(
     fun getRestaurantById(@PathVariable @Min(1) id: Long): RestaurantResponse = restaurantService.getById(id).toResponse()
 
     @PutMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     fun updateRestaurant(
         @PathVariable @Min(1) id: Long,
         @Valid @RequestBody request: RestaurantUpdateRequest,
     ): RestaurantResponse = restaurantService.update(id, request.toDomain(id)).toResponse()
 
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     fun deleteRestaurant(@PathVariable @Min(1) id: Long): ResponseEntity<Void> {
         restaurantService.delete(id)
         return ResponseEntity.noContent().build()

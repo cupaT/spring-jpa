@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
 import org.springframework.http.MediaType
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user
 import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
@@ -87,6 +88,7 @@ class DishControllerIntegrationTest {
         mockMvc
             .perform(
                 post("/api/v1/restaurants/${restaurant.id}/dishes")
+                    .with(user("admin").roles("ADMIN"))
                     .contentType(MediaType.APPLICATION_JSON)
                     .content(
                         """
@@ -112,6 +114,7 @@ class DishControllerIntegrationTest {
         mockMvc
             .perform(
                 post("/api/v1/restaurants/999/dishes")
+                    .with(user("admin").roles("ADMIN"))
                     .contentType(MediaType.APPLICATION_JSON)
                     .content(
                         """
@@ -177,6 +180,7 @@ class DishControllerIntegrationTest {
         mockMvc
             .perform(
                 put("/api/v1/dishes/${dish.id}")
+                    .with(user("admin").roles("ADMIN"))
                     .contentType(MediaType.APPLICATION_JSON)
                     .content(
                         """
@@ -215,6 +219,7 @@ class DishControllerIntegrationTest {
         mockMvc
             .perform(
                 put("/api/v1/dishes/${dish.id}")
+                    .with(user("admin").roles("ADMIN"))
                     .contentType(MediaType.APPLICATION_JSON)
                     .content(
                         """
@@ -250,17 +255,64 @@ class DishControllerIntegrationTest {
             )
 
         mockMvc
-            .perform(delete("/api/v1/dishes/${dish.id}"))
+            .perform(delete("/api/v1/dishes/${dish.id}").with(user("admin").roles("ADMIN")))
             .andExpect(status().isNoContent)
     }
 
     @Test
     fun `DELETE dish returns not found when dish does not exist`() {
         mockMvc
-            .perform(delete("/api/v1/dishes/999"))
+            .perform(delete("/api/v1/dishes/999").with(user("admin").roles("ADMIN")))
             .andExpect(status().isNotFound)
             .andExpect(jsonPath("$.status").value(404))
             .andExpect(jsonPath("$.message").value("Dish with id=999 not found"))
+    }
+
+    @Test
+    fun `POST restaurant dish without token returns unauthorized`() {
+        val restaurant = restaurantJpaRepository.save(RestaurantEntity(name = "Pizza Place", address = "Lenina 1"))
+
+        mockMvc
+            .perform(
+                post("/api/v1/restaurants/${restaurant.id}/dishes")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(
+                        """
+                        {
+                          "name": "Pepperoni",
+                          "description": "Spicy pizza",
+                          "price": 15.20,
+                          "isAvailable": true
+                        }
+                        """.trimIndent()
+                    )
+            )
+            .andExpect(status().isUnauthorized)
+            .andExpect(jsonPath("$.status").value(401))
+    }
+
+    @Test
+    fun `POST restaurant dish as user returns forbidden`() {
+        val restaurant = restaurantJpaRepository.save(RestaurantEntity(name = "Pizza Place", address = "Lenina 1"))
+
+        mockMvc
+            .perform(
+                post("/api/v1/restaurants/${restaurant.id}/dishes")
+                    .with(user("user").roles("USER"))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(
+                        """
+                        {
+                          "name": "Pepperoni",
+                          "description": "Spicy pizza",
+                          "price": 15.20,
+                          "isAvailable": true
+                        }
+                        """.trimIndent()
+                    )
+            )
+            .andExpect(status().isForbidden)
+            .andExpect(jsonPath("$.status").value(403))
     }
 
     companion object {

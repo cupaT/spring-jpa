@@ -33,4 +33,6 @@ class UserJpaRepositoryAdapter(
     }
 
     override fun findByEmail(email: String): User? = userJpaRepository.findByEmail(email)?.toDomain()
+
+    override fun existsByEmail(email: String): Boolean = userJpaRepository.existsByEmail(email)
 }

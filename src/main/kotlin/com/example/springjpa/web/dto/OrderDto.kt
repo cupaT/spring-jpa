@@ -7,8 +7,6 @@ import jakarta.validation.constraints.NotNull
 import java.time.LocalDateTime
 
 data class OrderCreateRequest(
-    @field:NotNull
-    val userId: Long,
     @field:NotEmpty
     val dishIds: List<Long>,
 )

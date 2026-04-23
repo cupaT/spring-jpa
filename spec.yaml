@@ -1,30 +1,107 @@
 openapi: 3.0.3
 info:
-  title: Lab 5 API Specification
+  title: Lab 7 API Specification
   version: 1.0.0
   description: |
-    Спецификация эндпоинтов для лабораторной работы №5.
-    Контракт эндпоинтов не меняется относительно ЛР-4.
-    Изменения: единый формат ошибок (ErrorResponse, ValidationErrorResponse),
-    валидация входных данных, обработка конфликтов (409).
+    Спецификация эндпоинтов для лабораторной работы №7.
+    Изменения относительно ЛР-5:
+    - Добавлены эндпоинты аутентификации: /auth/register, /auth/login.
+    - Добавлена JWT-аутентификация (Bearer token).
+    - Защищены эндпоинты по ролям (USER, ADMIN).
+    - OrderCreateRequest больше не содержит userId — пользователь определяется из JWT.
+    - Добавлены ответы 401 (Unauthorized) и 403 (Forbidden).
 
 servers:
   - url: http://localhost:8080
 
 tags:
+  - name: Auth
+    description: Регистрация и аутентификация
   - name: Users
+    description: Управление пользователями (ADMIN)
   - name: Restaurants
   - name: Dishes
   - name: Orders
 
 paths:
-  # ── Users ──
+  # ── Auth ──
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      operationId: register
+      summary: Регистрация нового пользователя
+      description: |
+        Создаёт нового пользователя с ролью USER.
+        Возвращает JWT-токен для дальнейших запросов.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Пользователь зарегистрирован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "409":
+          description: Пользователь с таким email уже существует
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Аутентификация пользователя
+      description: |
+        Проверяет credentials и возвращает JWT-токен.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Успешная аутентификация
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          description: Неверный email или пароль
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Users (ADMIN) ──
 
   /api/v1/users:
     get:
       tags: [Users]
       operationId: listUsers
       summary: Получить список пользователей
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: OK
@@ -34,39 +111,10 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/UserResponse"
-    post:
-      tags: [Users]
-      operationId: createUser
-      summary: Создать пользователя или вернуть существующего
-      description: |
-        Если пользователь с тем же email уже существует,
-        вернуть существующую сущность и код 200.
-        Если пользователя еще нет, создать и вернуть код 201.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UserCreateRequest"
-      responses:
-        "200":
-          description: Existing user returned
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/UserResponse"
-        "201":
-          description: Created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/UserResponse"
-        "400":
-          description: Validation error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 
   /api/v1/users/{id}:
     parameters:
@@ -80,6 +128,8 @@ paths:
       tags: [Users]
       operationId: getUserById
       summary: Получить пользователя по id
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: OK
@@ -87,6 +137,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UserResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Not found
           content:
@@ -97,6 +151,8 @@ paths:
       tags: [Users]
       operationId: updateUser
       summary: Обновить пользователя
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -116,6 +172,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Not found
           content:
@@ -126,9 +186,15 @@ paths:
       tags: [Users]
       operationId: deleteUser
       summary: Удалить пользователя
+      security:
+        - bearerAuth: []
       responses:
         "204":
           description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Not found
           content:
@@ -143,6 +209,7 @@ paths:
       tags: [Restaurants]
       operationId: listRestaurants
       summary: Получить список ресторанов
+      description: Публичный эндпоинт — доступен без аутентификации.
       responses:
         "200":
           description: OK
@@ -156,6 +223,9 @@ paths:
       tags: [Restaurants]
       operationId: createRestaurant
       summary: Создать ресторан
+      description: Только для ADMIN.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -175,6 +245,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "409":
           description: Restaurant with this name already exists
           content:
@@ -194,6 +268,7 @@ paths:
       tags: [Restaurants]
       operationId: getRestaurantById
       summary: Получить ресторан по id
+      description: Публичный эндпоинт — доступен без аутентификации.
       responses:
         "200":
           description: OK
@@ -211,6 +286,9 @@ paths:
       tags: [Restaurants]
       operationId: updateRestaurant
       summary: Обновить ресторан
+      description: Только для ADMIN.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -230,6 +308,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Not found
           content:
@@ -240,9 +322,16 @@ paths:
       tags: [Restaurants]
       operationId: deleteRestaurant
       summary: Удалить ресторан
+      description: Только для ADMIN.
+      security:
+        - bearerAuth: []
       responses:
         "204":
           description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Not found
           content:
@@ -264,6 +353,7 @@ paths:
       operationId: getRestaurantDishes
       summary: Получить меню ресторана (список блюд)
       description: |
+        Публичный эндпоинт — доступен без аутентификации.
         Возвращает все блюда, принадлежащие данному ресторану.
         Должно загружаться без N+1 (через @EntityGraph или JOIN FETCH).
       responses:
@@ -296,7 +386,10 @@ paths:
       operationId: createDishInRestaurant
       summary: Добавить блюдо в ресторан
       description: |
+        Только для ADMIN.
         Создаёт новое блюдо и привязывает его к указанному ресторану.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -316,6 +409,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Restaurant not found
           content:
@@ -330,6 +427,7 @@ paths:
       tags: [Dishes]
       operationId: listDishes
       summary: Получить список блюд (опционально с фильтром по имени)
+      description: Публичный эндпоинт — доступен без аутентификации.
       parameters:
         - name: namePart
           in: query
@@ -359,6 +457,7 @@ paths:
       tags: [Dishes]
       operationId: getDishById
       summary: Получить блюдо по id
+      description: Публичный эндпоинт — доступен без аутентификации.
       responses:
         "200":
           description: OK
@@ -376,6 +475,9 @@ paths:
       tags: [Dishes]
       operationId: updateDish
       summary: Обновить блюдо
+      description: Только для ADMIN.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -395,6 +497,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Not found
           content:
@@ -405,9 +511,16 @@ paths:
       tags: [Dishes]
       operationId: deleteDish
       summary: Удалить блюдо
+      description: Только для ADMIN.
+      security:
+        - bearerAuth: []
       responses:
         "204":
           description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Not found
           content:
@@ -422,14 +535,12 @@ paths:
       tags: [Orders]
       operationId: listOrders
       summary: Получить список заказов
+      description: |
+        ADMIN видит все заказы (с опциональными фильтрами).
+        USER видит только свои заказы.
+      security:
+        - bearerAuth: []
       parameters:
-        - name: userId
-          in: query
-          required: false
-          description: Фильтр по ID пользователя
-          schema:
-            type: integer
-            format: int64
         - name: status
           in: query
           required: false
@@ -446,15 +557,19 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/OrderResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
     post:
       tags: [Orders]
       operationId: createOrder
       summary: Создать заказ
       description: |
-        Создаёт заказ для указанного пользователя с перечисленными блюдами.
+        Создаёт заказ для текущего аутентифицированного пользователя.
+        userId определяется из JWT-токена, передавать его в теле не нужно.
         Статус нового заказа — PENDING.
         Все указанные dishIds должны существовать, иначе — ошибка 400.
-        userId должен существовать, иначе — ошибка 400.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -469,11 +584,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/OrderResponse"
         "400":
-          description: Validation error (user or dish not found, empty dish list)
+          description: Validation error (dish not found, empty dish list)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
   /api/v1/orders/{id}:
     parameters:
@@ -488,8 +605,11 @@ paths:
       operationId: getOrderById
       summary: Получить заказ по id
       description: |
+        USER может просматривать только свои заказы.
+        ADMIN может просматривать любой заказ.
         Возвращает заказ с полной информацией: пользователь и список блюд.
-        Должно загружаться без N+1 (через @EntityGraph или JOIN FETCH).
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: OK
@@ -497,6 +617,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrderResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Заказ принадлежит другому пользователю
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Not found
           content:
@@ -516,6 +644,9 @@ paths:
       tags: [Orders]
       operationId: updateOrderStatus
       summary: Обновить статус заказа
+      description: Только для ADMIN.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -535,6 +666,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Not found
           content:
@@ -543,29 +678,86 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
 
 components:
-  schemas:
-    # ── Users ──
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "JWT-токен, полученный через /auth/login или /auth/register"
 
-    UserCreateRequest:
+  responses:
+    Unauthorized:
+      description: Не аутентифицирован (отсутствует или невалидный токен)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            status: 401
+            message: "Требуется аутентификация"
+            timestamp: "2026-04-02T12:00:00"
+
+    Forbidden:
+      description: Доступ запрещён (недостаточно прав)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            status: 403
+            message: "Доступ запрещён"
+            timestamp: "2026-04-02T12:00:00"
+
+  schemas:
+    # ── Auth ──
+
+    RegisterRequest:
       type: object
-      required: [email, firstName, lastName]
+      required: [email, password, name]
       properties:
         email:
           type: string
           format: email
           example: user@example.com
-        firstName:
+        password:
+          type: string
+          minLength: 6
+          example: "secret123"
+        name:
           type: string
           minLength: 1
-          example: Ivan
-        lastName:
+          example: "Иван Петров"
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
           type: string
-          minLength: 1
-          example: Petrov
-        isActive:
-          type: boolean
-          default: true
-          example: true
+          format: email
+          example: user@example.com
+        password:
+          type: string
+          example: "secret123"
+
+    AuthResponse:
+      type: object
+      required: [token, email, role]
+      properties:
+        token:
+          type: string
+          description: JWT-токен для Authorization header
+          example: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyQGV4YW1wbGUuY29tIn0..."
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        role:
+          type: string
+          enum: [USER, ADMIN]
+          example: USER
+
+    # ── Users ──
 
     UserUpdateRequest:
       type: object
@@ -585,7 +777,7 @@ components:
 
     UserResponse:
       type: object
-      required: [id, email, firstName, lastName, isActive]
+      required: [id, email, firstName, lastName, isActive, role]
       properties:
         id:
           type: integer
@@ -599,6 +791,9 @@ components:
           type: string
         isActive:
           type: boolean
+        role:
+          type: string
+          enum: [USER, ADMIN]
 
     # ── Restaurants ──
 
@@ -702,12 +897,8 @@ components:
 
     OrderCreateRequest:
       type: object
-      required: [userId, dishIds]
+      required: [dishIds]
       properties:
-        userId:
-          type: integer
-          format: int64
-          example: 1
         dishIds:
           type: array
           minItems: 1
@@ -746,7 +937,7 @@ components:
           items:
             $ref: "#/components/schemas/DishResponse"
 
-    # ── Errors (обновлено в ЛР-5) ──
+    # ── Errors ──
 
     ErrorResponse:
       type: object
