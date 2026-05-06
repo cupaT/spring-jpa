@@ -28,6 +28,12 @@ services:
       timeout: 3s
       retries: 5
 
+  mailhog:
+    image: mailhog/mailhog
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
   app:
     build: .
     ports:
@@ -41,11 +47,15 @@ services:
       JWT_EXPIRATION: ${JWT_EXPIRATION}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      MAIL_HOST: mailhog
+      MAIL_PORT: 1025
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      mailhog:
+        condition: service_started
 
   pgadmin:
     image: dpage/pgadmin4

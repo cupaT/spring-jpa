@@ -15,6 +15,7 @@ class OrderService(
     private val orderRepositoryPort: OrderRepositoryPort,
     private val userRepositoryPort: UserRepositoryPort,
     private val dishRepositoryPort: DishRepositoryPort,
+    private val notificationService: NotificationService,
 ) {
     private val logger = KotlinLogging.logger {}
 
@@ -55,13 +56,24 @@ class OrderService(
                 logger.warn { "Order with id=$id not found during status update write" }
             }
         logger.info { "Order status updated: id=$id, from=${existing.status}, to=${updated.status}" }
+        sendStatusNotification(updated)
         return updated
+    }
+
+    private fun sendStatusNotification(order: Order) {
+        val user = userRepositoryPort.findById(order.userId)
+        if (user == null) {
+            logger.warn { "User with id=${order.userId} not found while sending order status notification" }
+            return
+        }
+        notificationService.sendOrderStatusUpdate(user.email, order.id, order.status)
     }
 
     private fun isTransitionAllowed(current: OrderStatus, next: OrderStatus): Boolean =
         when (current) {
             OrderStatus.PENDING -> next == OrderStatus.PENDING || next == OrderStatus.CONFIRMED || next == OrderStatus.CANCELLED
-            OrderStatus.CONFIRMED -> next == OrderStatus.CONFIRMED || next == OrderStatus.DELIVERED || next == OrderStatus.CANCELLED
+            OrderStatus.CONFIRMED -> next == OrderStatus.CONFIRMED || next == OrderStatus.PREPARING || next == OrderStatus.CANCELLED
+            OrderStatus.PREPARING -> next == OrderStatus.PREPARING || next == OrderStatus.DELIVERED || next == OrderStatus.CANCELLED
             OrderStatus.DELIVERED -> next == OrderStatus.DELIVERED
             OrderStatus.CANCELLED -> next == OrderStatus.CANCELLED
         }

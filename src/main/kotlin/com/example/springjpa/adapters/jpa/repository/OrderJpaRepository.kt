@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.EntityGraph
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Query
 import org.springframework.data.repository.query.Param
+import java.time.LocalDateTime
 
 interface OrderJpaRepository : JpaRepository<OrderEntity, Long> {
     @EntityGraph(attributePaths = ["user", "dishes", "dishes.restaurant"])
@@ -25,5 +26,20 @@ interface OrderJpaRepository : JpaRepository<OrderEntity, Long> {
     fun searchDetailed(
         @Param("userId") userId: Long?,
         @Param("status") status: OrderStatus?,
+    ): List<OrderEntity>
+
+    @EntityGraph(attributePaths = ["user", "dishes", "dishes.restaurant"])
+    @Query(
+        """
+        select distinct o
+        from OrderEntity o
+        where o.status = :status
+          and o.createdAt < :createdBefore
+        order by o.id asc
+        """
+    )
+    fun findDetailedByStatusAndCreatedAtBefore(
+        @Param("status") status: OrderStatus,
+        @Param("createdBefore") createdBefore: LocalDateTime,
     ): List<OrderEntity>
 }

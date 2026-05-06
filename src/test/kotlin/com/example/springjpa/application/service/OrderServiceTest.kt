@@ -9,11 +9,11 @@ import com.example.springjpa.domain.model.Dish
 import com.example.springjpa.domain.model.Order
 import com.example.springjpa.domain.model.OrderStatus
 import com.example.springjpa.domain.model.User
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.extension.ExtendWith
-import org.mockito.InjectMocks
 import org.mockito.Mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
@@ -34,8 +34,15 @@ class OrderServiceTest {
     @Mock
     lateinit var dishRepositoryPort: DishRepositoryPort
 
-    @InjectMocks
+    @Mock
+    lateinit var notificationService: NotificationService
+
     lateinit var orderService: OrderService
+
+    @BeforeEach
+    fun setUp() {
+        orderService = OrderService(orderRepositoryPort, userRepositoryPort, dishRepositoryPort, notificationService)
+    }
 
     @Test
     fun `create throws IllegalArgumentException when user does not exist`() {
@@ -99,6 +106,8 @@ class OrderServiceTest {
         assertThrows<NotFoundException> {
             orderService.updateStatus(9, OrderStatus.CONFIRMED)
         }
+
+        verifyNoInteractions(notificationService)
     }
 
     @Test
@@ -110,6 +119,7 @@ class OrderServiceTest {
         }
 
         verify(orderRepositoryPort, never()).updateStatus(9, OrderStatus.CANCELLED)
+        verifyNoInteractions(notificationService)
     }
 
     @Test
@@ -120,18 +130,50 @@ class OrderServiceTest {
         assertThrows<NotFoundException> {
             orderService.updateStatus(9, OrderStatus.CONFIRMED)
         }
+
+        verifyNoInteractions(notificationService)
     }
 
     @Test
-    fun `updateStatus returns updated order for allowed transition`() {
+    fun `updateStatus returns updated order and sends notification for allowed transition`() {
         val existing = order(9, OrderStatus.PENDING, listOf(dish(1)))
         val updated = existing.copy(status = OrderStatus.CONFIRMED)
         `when`(orderRepositoryPort.findById(9)).thenReturn(existing)
         `when`(orderRepositoryPort.updateStatus(9, OrderStatus.CONFIRMED)).thenReturn(updated)
+        `when`(userRepositoryPort.findById(3)).thenReturn(user(3))
 
         val result = orderService.updateStatus(9, OrderStatus.CONFIRMED)
 
         assertEquals(updated, result)
+        verify(notificationService).sendOrderStatusUpdate("user3@example.com", 9, OrderStatus.CONFIRMED)
+    }
+
+    @Test
+    fun `updateStatus allows confirmed to preparing transition`() {
+        val existing = order(9, OrderStatus.CONFIRMED, listOf(dish(1)))
+        val updated = existing.copy(status = OrderStatus.PREPARING)
+        `when`(orderRepositoryPort.findById(9)).thenReturn(existing)
+        `when`(orderRepositoryPort.updateStatus(9, OrderStatus.PREPARING)).thenReturn(updated)
+        `when`(userRepositoryPort.findById(3)).thenReturn(user(3))
+
+        val result = orderService.updateStatus(9, OrderStatus.PREPARING)
+
+        assertEquals(updated, result)
+        verify(notificationService).sendOrderStatusUpdate("user3@example.com", 9, OrderStatus.PREPARING)
+    }
+
+    @Test
+    fun `updateStatus skips notification when user does not exist after update`() {
+        val existing = order(9, OrderStatus.PENDING, listOf(dish(1)))
+        val updated = existing.copy(status = OrderStatus.CONFIRMED)
+        `when`(orderRepositoryPort.findById(9)).thenReturn(existing)
+        `when`(orderRepositoryPort.updateStatus(9, OrderStatus.CONFIRMED)).thenReturn(updated)
+        `when`(userRepositoryPort.findById(3)).thenReturn(null)
+
+        val result = orderService.updateStatus(9, OrderStatus.CONFIRMED)
+
+        assertEquals(updated, result)
+        verifyNoInteractions(notificationService)
     }
 
     private fun user(id: Long) =

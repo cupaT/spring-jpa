@@ -43,6 +43,9 @@ class OrderJpaRepositoryAdapter(
     override fun findAll(userId: Long?, status: OrderStatus?): List<Order> =
         orderJpaRepository.searchDetailed(userId, status).map { it.toDomain() }
 
+    override fun findByStatusAndCreatedAtBefore(status: OrderStatus, createdBefore: LocalDateTime): List<Order> =
+        orderJpaRepository.findDetailedByStatusAndCreatedAtBefore(status, createdBefore).map { it.toDomain() }
+
     override fun updateStatus(id: Long, status: OrderStatus): Order? {
         val existing = orderJpaRepository.findDetailedById(id) ?: return null
         existing.status = status
