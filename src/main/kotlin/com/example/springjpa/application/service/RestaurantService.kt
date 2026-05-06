@@ -5,6 +5,9 @@ import com.example.springjpa.application.exception.NotFoundException
 import com.example.springjpa.application.port.RestaurantRepositoryPort
 import com.example.springjpa.domain.model.Restaurant
 import io.github.oshai.kotlinlogging.KotlinLogging
+import org.springframework.cache.annotation.CacheEvict
+import org.springframework.cache.annotation.Cacheable
+import org.springframework.cache.annotation.Caching
 import org.springframework.stereotype.Service
 
 @Service
@@ -13,13 +16,21 @@ class RestaurantService(
 ) {
     private val logger = KotlinLogging.logger {}
 
-    fun list(): List<Restaurant> = restaurantRepositoryPort.findAll()
+    @Cacheable(cacheNames = ["restaurants"])
+    fun list(): List<Restaurant> {
+        logger.info { "Loading all restaurants from database" }
+        return restaurantRepositoryPort.findAll()
+    }
 
-    fun getById(id: Long): Restaurant =
-        restaurantRepositoryPort.findById(id) ?: throw NotFoundException("Restaurant with id=$id not found").also {
+    @Cacheable(cacheNames = ["restaurants"], key = "#id")
+    fun getById(id: Long): Restaurant {
+        logger.info { "Loading restaurant id=$id from database" }
+        return restaurantRepositoryPort.findById(id) ?: throw NotFoundException("Restaurant with id=$id not found").also {
             logger.warn { "Restaurant with id=$id not found" }
         }
+    }
 
+    @CacheEvict(cacheNames = ["restaurants"], allEntries = true, beforeInvocation = true)
     fun create(restaurant: Restaurant): Restaurant {
         val candidateName = restaurant.name.trim()
         val candidateCanonicalName = canonicalRestaurantName(candidateName)
@@ -35,6 +46,7 @@ class RestaurantService(
         return created
     }
 
+    @CacheEvict(cacheNames = ["restaurants"], allEntries = true, beforeInvocation = true)
     fun update(id: Long, restaurant: Restaurant): Restaurant {
         val candidateName = restaurant.name.trim()
         val candidateCanonicalName = canonicalRestaurantName(candidateName)
@@ -51,6 +63,12 @@ class RestaurantService(
         }
     }
 
+    @Caching(
+        evict = [
+            CacheEvict(cacheNames = ["restaurants"], allEntries = true, beforeInvocation = true),
+            CacheEvict(cacheNames = ["dishes"], allEntries = true, beforeInvocation = true),
+        ],
+    )
     fun delete(id: Long) {
         if (!restaurantRepositoryPort.deleteById(id)) {
             logger.warn { "Restaurant with id=$id not found for delete" }

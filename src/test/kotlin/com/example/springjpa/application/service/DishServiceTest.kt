@@ -125,16 +125,20 @@ class DishServiceTest {
 
     @Test
     fun `delete removes dish when repository confirms deletion`() {
+        val existing = dish(id = 11, restaurantId = 3)
+        `when`(dishRepositoryPort.findById(11)).thenReturn(existing)
         `when`(dishRepositoryPort.deleteById(11)).thenReturn(true)
 
-        dishService.delete(11)
+        val result = dishService.delete(11)
 
+        assertEquals(existing, result)
+        verify(dishRepositoryPort).findById(11)
         verify(dishRepositoryPort).deleteById(11)
     }
 
     @Test
     fun `delete throws NotFoundException when dish does not exist`() {
-        `when`(dishRepositoryPort.deleteById(11)).thenReturn(false)
+        `when`(dishRepositoryPort.findById(11)).thenReturn(null)
 
         assertThrows<NotFoundException> {
             dishService.delete(11)
