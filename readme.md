@@ -1,12 +1,13 @@
-# Лабораторная работа №8
+# Лабораторная работа №11
 
-## Документация API, контейнеризация и CI/CD
+## Брокер сообщений: RabbitMQ
 
 ---
 
 ## Цель работы
 
-Задокументировать REST API через SpringDoc, упаковать приложение в Docker-образ, поднять весь стек через docker-compose и настроить автоматическую доставку образа в реестр через GitHub Actions.
+Ввести в проект доставки еды событийную архитектуру: подключить RabbitMQ, публиковать доменные события при изменении
+заказов и перевести отправку email-уведомлений из ЛР-10 с прямого вызова на асинхронную обработку через очередь.
 
 ---
 
@@ -18,398 +19,485 @@
 
 ## Теоретический блок
 
-### 1) Документирование API: SpringDoc OpenAPI
+### 1) Проблема: тесная связность
 
-#### Зачем это нужно
+В ЛР-10 `OrderService` при смене статуса заказа напрямую вызывает `NotificationService.sendEmail()`. Это работает, но
+создаёт проблемы:
 
-Когда API растёт, его становится сложно изучать по коду. SpringDoc автоматически генерирует документацию из ваших контроллеров и публикует интерактивный Swagger UI — браузерный интерфейс, через который можно смотреть все эндпоинты и сразу отправлять запросы.
+```kotlin
+// Сейчас: OrderService знает про NotificationService
+fun updateStatus(id: Long, newStatus: OrderStatus): Order {
+    val order = findOrder(id)
+    order.status = newStatus
+    val saved = orderRepository.save(order)
+    notificationService.sendEmail(saved)  // ← прямая зависимость
+    return saved
+}
+```
 
-#### Зависимость
+**Что плохо:**
+
+- `OrderService` знает про `NotificationService` — нарушение принципа единственной ответственности.
+- Если отправка email упадёт — транзакция откатится или заказ вернётся с ошибкой, хотя статус уже поменялся.
+- Чтобы добавить новый реакцию на событие (SMS, push, аналитика) — нужно лезть в `OrderService`.
+- Под нагрузкой медленная почта блокирует поток HTTP-запроса.
+
+Решение — **разделить факт события и его обработку**: `OrderService` публикует событие "статус изменился" и больше ни о
+чём не знает. Кто и как реагирует — не его дело.
+
+---
+
+### 2) Брокер сообщений: концепция
+
+**Брокер сообщений** — промежуточное звено между producer (тот, кто публикует события) и consumer (тот, кто их
+обрабатывает). Брокер принимает сообщения, хранит их и доставляет подписчикам.
+
+```
+OrderService           RabbitMQ              NotificationService
+  (producer)           (broker)                  (consumer)
+
+order.updateStatus()
+       │
+       ▼
+  publish event  ──→  [queue]  ──→  @RabbitListener
+                                         │
+                                         ▼
+                                    sendEmail()
+```
+
+**Что это даёт:**
+
+- **Decoupling** — producer и consumer не знают друг о друге и не зависят от доступности друг друга.
+- **Надёжность** — если consumer упал, сообщения накапливаются в очереди и будут обработаны после его восстановления.
+- **Масштабируемость** — можно запустить несколько экземпляров consumer-а, RabbitMQ распределит нагрузку.
+- **Расширяемость** — новая реакция на событие = новый consumer, без изменения producer-а.
+
+---
+
+### 3) Ключевые понятия AMQP
+
+RabbitMQ реализует протокол **AMQP** (Advanced Message Queuing Protocol). Важно понять четыре сущности и как они
+связаны:
+
+```
+Producer  →  Exchange  →  Queue  →  Consumer
+               ↑
+           Binding (routing key)
+```
+
+- **Producer** — публикует сообщение в **exchange**, не в очередь напрямую.
+- **Exchange** — получает сообщение и маршрутизирует его в одну или несколько очередей по правилам.
+- **Queue** — буфер, где сообщения хранятся до получения consumer-ом.
+- **Binding** — правило связи exchange → queue. Определяет, какие сообщения попадают в какую очередь.
+- **Routing key** — метка сообщения, по которой exchange решает, куда его направить.
+- **Consumer** — подписывается на очередь и обрабатывает сообщения.
+
+#### Типы exchange
+
+| Тип         | Маршрутизация                          | Когда использовать           |
+|:------------|:---------------------------------------|:-----------------------------|
+| **Direct**  | По точному совпадению routing key      | Одно событие → одна очередь  |
+| **Topic**   | По паттерну (`order.*`, `*.created`)   | Гибкая фильтрация событий    |
+| **Fanout**  | Во все привязанные очереди (broadcast) | Уведомить всех подписчиков   |
+| **Headers** | По заголовкам сообщения                | Редко, сложная маршрутизация |
+
+Для сервиса доставки удобнее всего **topic exchange**: routing key вида `order.created`, `order.status.changed` — и
+любой consumer подписывается на интересующий паттерн.
+
+---
+
+### 4) RabbitMQ в docker-compose
+
+RabbitMQ поставляется с веб-интерфейсом управления (Management UI) — образ с тегом `-management`:
+
+```yaml
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"    # AMQP — подключение приложения
+      - "15672:15672"  # Management UI — браузер
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:guest}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rabbitmq_data:
+```
+
+Management UI доступен по адресу `http://localhost:15672`. Там можно смотреть очереди, сообщения, consumer-ов и вручную
+публиковать тестовые сообщения.
+
+---
+
+### 5) Spring AMQP: зависимости и конфигурация
 
 ```xml
-<!-- pom.xml -->
+
 <dependency>
-    <groupId>org.springdoc</groupId>
-    <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-    <version>2.8.9</version>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-amqp</artifactId>
 </dependency>
 ```
 
-После добавления зависимости Swagger UI доступен по адресу `http://localhost:8080/swagger-ui.html` — без каких-либо дополнительных настроек.
+Настройки в `application.yaml`:
 
-OpenAPI JSON/YAML схема: `http://localhost:8080/v3/api-docs`.
+```yaml
+spring:
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:guest}
+    password: ${RABBITMQ_PASS:guest}
+```
 
-#### Настройка мета-информации (опционально)
+#### Объявление инфраструктуры через конфигурацию
+
+Exchange, queue и binding лучше объявлять через Spring-бины — тогда они создаются автоматически при старте, даже если их
+нет в брокере:
 
 ```kotlin
 @Configuration
-class OpenApiConfig {
+class RabbitConfig {
+
+    companion object {
+        const val EXCHANGE = "order.exchange"
+        const val ORDER_STATUS_QUEUE = "order.status.changed.queue"
+        const val ORDER_STATUS_ROUTING_KEY = "order.status.changed"
+        const val ORDER_CREATED_QUEUE = "order.created.queue"
+        const val ORDER_CREATED_ROUTING_KEY = "order.created"
+    }
+
     @Bean
-    fun openApi(): OpenAPI = OpenAPI()
-        .info(
-            Info()
-                .title("Food Delivery API")
-                .version("1.0.0")
-                .description("REST API сервиса доставки еды")
+    fun orderExchange(): TopicExchange =
+        TopicExchange(EXCHANGE)
+
+    @Bean
+    fun orderStatusQueue(): Queue =
+        QueueBuilder.durable(ORDER_STATUS_QUEUE).build()
+
+    @Bean
+    fun orderCreatedQueue(): Queue =
+        QueueBuilder.durable(ORDER_CREATED_QUEUE).build()
+
+    @Bean
+    fun orderStatusBinding(): Binding =
+        BindingBuilder
+            .bind(orderStatusQueue())
+            .to(orderExchange())
+            .with(ORDER_STATUS_ROUTING_KEY)
+
+    @Bean
+    fun orderCreatedBinding(): Binding =
+        BindingBuilder
+            .bind(orderCreatedQueue())
+            .to(orderExchange())
+            .with(ORDER_CREATED_ROUTING_KEY)
+
+    @Bean
+    fun messageConverter(): MessageConverter =
+        Jackson2JsonMessageConverter()
+
+    @Bean
+    fun rabbitTemplate(
+        connectionFactory: ConnectionFactory,
+        messageConverter: MessageConverter
+    ): RabbitTemplate = RabbitTemplate(connectionFactory).apply {
+        this.messageConverter = messageConverter
+    }
+}
+```
+
+`Jackson2JsonMessageConverter` — сериализация сообщений в JSON. Без него Spring AMQP использует Java Serialization,
+которую сложно читать и которая требует `Serializable` на классах событий.
+
+`QueueBuilder.durable()` — очередь переживает рестарт RabbitMQ. Без `durable` очередь создаётся заново при рестарте, и
+все накопленные сообщения теряются.
+
+---
+
+### 6) Доменные события: что публиковать
+
+Событие — это описание того, что **уже произошло**. Именуется в прошедшем времени:
+
+```kotlin
+data class OrderCreatedEvent(
+    val orderId: Long,
+    val userId: Long,
+    val dishIds: List<Long>,
+    val createdAt: LocalDateTime = LocalDateTime.now()
+)
+
+data class OrderStatusChangedEvent(
+    val orderId: Long,
+    val userId: Long,
+    val userEmail: String,
+    val oldStatus: OrderStatus,
+    val newStatus: OrderStatus,
+    val changedAt: LocalDateTime = LocalDateTime.now()
+)
+```
+
+Событие содержит всё, что consumer-у нужно для обработки — без дополнительных запросов в БД. `userEmail` в
+`OrderStatusChangedEvent` нужен consumer-у для отправки письма.
+
+> Не передавайте в событии JPA-сущности напрямую. Сущность привязана к Hibernate-сессии, которая закрывается после
+> транзакции. Сериализованная сущность потянет за собой связи (lazy-loading вне сессии бросит исключение). Используйте
+> отдельные data-классы для событий.
+
+---
+
+### 7) Публикация: RabbitTemplate
+
+```kotlin
+@Service
+class OrderEventPublisher(
+    private val rabbitTemplate: RabbitTemplate
+) {
+    private val logger = KotlinLogging.logger {}
+
+    fun publishOrderCreated(event: OrderCreatedEvent) {
+        rabbitTemplate.convertAndSend(
+            RabbitConfig.EXCHANGE,
+            RabbitConfig.ORDER_CREATED_ROUTING_KEY,
+            event
         )
+        logger.info { "Опубликовано событие OrderCreated для заказа ${event.orderId}" }
+    }
+
+    fun publishOrderStatusChanged(event: OrderStatusChangedEvent) {
+        rabbitTemplate.convertAndSend(
+            RabbitConfig.EXCHANGE,
+            RabbitConfig.ORDER_STATUS_ROUTING_KEY,
+            event
+        )
+        logger.info { "Опубликовано событие OrderStatusChanged: ${event.oldStatus} → ${event.newStatus}" }
+    }
 }
 ```
 
-#### Swagger UI и Spring Security
-
-Если у вас настроена Spring Security (из ЛР-7), пути Swagger UI нужно явно разрешить в `SecurityFilterChain`:
+Теперь `OrderService` зависит только от `OrderEventPublisher`, а не от `NotificationService`:
 
 ```kotlin
-.authorizeHttpRequests { auth ->
-    auth
-        .requestMatchers(
-            "/swagger-ui/**",
-            "/swagger-ui.html",
-            "/v3/api-docs/**"
-        ).permitAll()
-        // ... остальные правила
+@Service
+class OrderService(
+    private val orderRepository: OrderRepository,
+    private val eventPublisher: OrderEventPublisher
+) {
+    fun updateStatus(id: Long, newStatus: OrderStatus): Order {
+        val order = findOrder(id)
+        val oldStatus = order.status
+        order.status = newStatus
+        val saved = orderRepository.save(order)
+
+        eventPublisher.publishOrderStatusChanged(
+            OrderStatusChangedEvent(
+                orderId = saved.id,
+                userId = saved.user.id,
+                userEmail = saved.user.email,
+                oldStatus = oldStatus,
+                newStatus = newStatus
+            )
+        )
+        return saved
+    }
 }
 ```
 
-#### Аннотирование контроллеров
+---
 
-Основные аннотации из пакета `io.swagger.v3.oas.annotations`:
-
-- `@Tag(name = "...")` — группировка эндпоинтов в UI
-- `@Operation(summary = "...")` — краткое описание метода
-- `@ApiResponse(responseCode = "200", description = "...")` — описание кода ответа
-- `@Parameter(description = "...")` — описание параметра запроса
-- `@Schema(description = "...")` — описание поля DTO
-
-Пример:
+### 8) Потребление: @RabbitListener
 
 ```kotlin
-@RestController
-@RequestMapping("/api/restaurants")
-@Tag(name = "Restaurants", description = "Управление ресторанами")
-class RestaurantController(private val restaurantService: RestaurantService) {
+@Component
+class NotificationConsumer(
+    private val notificationService: NotificationService
+) {
+    private val logger = KotlinLogging.logger {}
 
-    @GetMapping("/{id}")
-    @Operation(summary = "Получить ресторан по ID")
-    @ApiResponses(
-        value = [
-            ApiResponse(responseCode = "200", description = "Ресторан найден"),
-            ApiResponse(responseCode = "404", description = "Ресторан не найден")
-        ]
-    )
-    fun getById(@PathVariable id: Long): ResponseEntity<RestaurantDto> =
-        ResponseEntity.ok(restaurantService.getById(id))
+    @RabbitListener(queues = [RabbitConfig.ORDER_STATUS_QUEUE])
+    fun handleOrderStatusChanged(event: OrderStatusChangedEvent) {
+        logger.info { "Получено событие: заказ ${event.orderId} → ${event.newStatus}" }
+        notificationService.sendStatusChangedEmail(event)
+    }
+
+    @RabbitListener(queues = [RabbitConfig.ORDER_CREATED_QUEUE])
+    fun handleOrderCreated(event: OrderCreatedEvent) {
+        logger.info { "Новый заказ ${event.orderId} от пользователя ${event.userId}" }
+        // здесь может быть любая логика: аналитика, подтверждение, резервирование
+    }
 }
 ```
 
-Аннотировать все эндпоинты необязательно — SpringDoc подхватит их автоматически. Аннотации нужны там, где автоматически сгенерированное описание недостаточно понятно.
+`@RabbitListener` поднимает фоновый поток, который постоянно слушает очередь. При получении сообщения Spring
+автоматически десериализует JSON в нужный тип и вызывает метод.
 
----
+#### Acknowledgements: явное подтверждение обработки
 
-### 2) Dockerfile: упаковка приложения
-
-#### Принцип работы
-
-Docker упаковывает приложение и его окружение (JRE, конфиги) в образ — изолированный исполняемый пакет. Образ одинаково запускается на любой машине, где установлен Docker.
-
-#### Multi-stage сборка
-
-Наивный подход — скопировать уже собранный JAR в образ:
-
-```dockerfile
-FROM eclipse-temurin:21-jre
-COPY target/*.jar app.jar
-ENTRYPOINT ["java", "-jar", "app.jar"]
-```
-
-Проблема: нужно сначала собрать JAR локально командой `mvn package`, и `target/` должен существовать до сборки образа.
-
-Лучший вариант — **multi-stage build**: Maven запускается внутри контейнера, итоговый образ содержит только JRE и JAR:
-
-```dockerfile
-# Stage 1: сборка
-FROM eclipse-temurin:21-jdk AS builder
-WORKDIR /app
-COPY . .
-RUN ./mvnw package -DskipTests
-
-# Stage 2: runtime
-FROM eclipse-temurin:21-jre
-WORKDIR /app
-COPY --from=builder /app/target/*.jar app.jar
-EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "app.jar"]
-```
-
-Финальный образ не содержит JDK, Maven и исходников — только JRE (~270 MB) и JAR. Это важно для безопасности и размера.
-
-#### .dockerignore
-
-Аналог `.gitignore` — указывает, что не нужно копировать в контекст сборки. Ускоряет сборку и исключает чувствительные файлы:
-
-```
-target/
-.git/
-.github/
-.idea/
-*.md
-.env
-```
-
-> `target/` не нужен: в multi-stage сборке Maven работает внутри контейнера.
-
-#### Проверка локально
-
-```bash
-docker build -t food-delivery:latest .
-docker run -p 8080:8080 food-delivery:latest
-```
-
----
-
-### 3) Docker Compose: поднять весь стек
-
-В ЛР-4 вы уже добавили docker-compose.yaml с сервисом `postgres`. Теперь добавьте к нему два новых сервиса: `app` (ваш REST API) и `pgadmin` (веб-интерфейс для базы данных).
-
-#### Сети
-
-Все сервисы в одном compose-файле по умолчанию оказываются в одной сети. Docker DNS резолвит имя сервиса в IP контейнера — поэтому в `SPRING_DATASOURCE_URL` нужно писать имя сервиса (`postgres`), а не `localhost`.
-
-#### healthcheck + depends_on
-
-Без `condition: service_healthy` приложение может стартовать раньше, чем postgres будет готов принимать соединения — Spring выбросит исключение при старте. Решение:
-
-1. Добавить `healthcheck` на сервис `postgres` — он периодически проверяет готовность через `pg_isready`.
-2. Добавить `depends_on` с `condition: service_healthy` на сервис `app` — compose дождётся зелёного статуса перед запуском приложения.
-
-#### pgAdmin
-
-Образ: `dpage/pgadmin4`. После запуска pgAdmin доступен в браузере. Для подключения к БД внутри pgAdmin в качестве хоста укажите имя сервиса postgres в compose-файле — Docker DNS сам разрешит его в нужный IP.
-
-#### Переменные окружения: .env файл
-
-Хранить логины и пароли прямо в docker-compose.yaml — плохая практика: они попадут в git. Docker Compose автоматически читает файл `.env` из той же директории и подставляет переменные через синтаксис `${VAR_NAME}`.
-
-Пример `.env`:
-
-```
-POSTGRES_DB=delivery
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
-PGADMIN_EMAIL=admin@admin.com
-PGADMIN_PASSWORD=admin
-```
-
-В docker-compose.yaml переменные используются так:
+По умолчанию RabbitMQ считает сообщение обработанным сразу после доставки (auto-ack). Если consumer упадёт в процессе
+обработки — сообщение потеряется. Надёжнее подтверждать вручную:
 
 ```yaml
-environment:
-  POSTGRES_DB: ${POSTGRES_DB}
-  POSTGRES_USER: ${POSTGRES_USER}
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+spring:
+  rabbitmq:
+    listener:
+      simple:
+        acknowledge-mode: manual
 ```
 
-Файл `.env` **не должен попасть в git** — добавьте его в `.gitignore`. Вместо него коммитьте `.env.example` с теми же ключами, но пустыми значениями — это документация для других разработчиков.
-
-#### Команды
-
-```bash
-docker compose up --build     # собрать образ и поднять стек
-docker compose up -d           # в фоне
-docker compose down            # остановить и удалить контейнеры
-docker compose logs -f app     # смотреть логи приложения
+```kotlin
+@RabbitListener(queues = [RabbitConfig.ORDER_STATUS_QUEUE])
+fun handleOrderStatusChanged(
+    event: OrderStatusChangedEvent,
+    channel: Channel,
+    @Header(AmqpHeaders.DELIVERY_TAG) deliveryTag: Long
+) {
+    try {
+        notificationService.sendStatusChangedEmail(event)
+        channel.basicAck(deliveryTag, false)   // подтвердить обработку
+    } catch (e: Exception) {
+        logger.error(e) { "Ошибка обработки события для заказа ${event.orderId}" }
+        channel.basicNack(deliveryTag, false, false)  // отклонить, не возвращать в очередь
+    }
+}
 ```
+
+`basicNack(..., requeue = false)` — отклонить сообщение без возврата в очередь. Если настроен DLQ, сообщение уйдёт туда.
 
 ---
 
-### 4) GitHub Actions: публикация образа (CD)
+### 9) Dead Letter Queue: обработка ошибок
 
-До сих пор `ci.yaml` запускал тесты на каждый PR. Теперь добавим `cd.yaml`, который будет собирать образ и отправлять его в реестр при каждом push в основную ветку.
+Если consumer не справился с сообщением (бросил исключение, отклонил через `basicNack`) — куда деть это сообщение? Без
+DLQ оно просто пропадёт. **Dead Letter Queue** — специальная очередь для "мёртвых" сообщений, которые не удалось
+обработать.
 
-Разделение на два файла — стандартная практика:
-- **CI** (Continuous Integration) — проверяем качество на PR, до мержа
-- **CD** (Continuous Delivery) — доставляем артефакт после мержа в main
+```kotlin
+@Bean
+fun orderStatusQueue(): Queue =
+    QueueBuilder.durable(ORDER_STATUS_QUEUE)
+        .withArgument("x-dead-letter-exchange", "")           // default exchange
+        .withArgument("x-dead-letter-routing-key", ORDER_STATUS_DLQ)
+        .build()
 
-Вы можете выбрать **один** из двух реестров — DockerHub или GHCR.
+@Bean
+fun orderStatusDlq(): Queue =
+    QueueBuilder.durable(ORDER_STATUS_DLQ).build()
+```
+
+Теперь при `basicNack(..., requeue = false)` сообщение автоматически переедет в `ORDER_STATUS_DLQ`. Оттуда его можно:
+
+- Проанализировать вручную через Management UI.
+- Обработать отдельным consumer-ом (например, залогировать и оповестить команду).
+- Переотправить в основную очередь после исправления ошибки.
 
 ---
 
-#### Вариант A: DockerHub
+### 10) Идемпотентность consumer-а
 
-**Подготовка:**
-1. Зарегистрируйтесь на [hub.docker.com](https://hub.docker.com)
-2. Account Settings → Security → **New Access Token** (разрешения: Read, Write, Delete). Скопируйте токен — он показывается только один раз.
-3. Откройте ваш репозиторий на GitHub → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**. Добавьте два секрета:
-   - `DOCKERHUB_USERNAME` — ваш логин на DockerHub
-   - `DOCKERHUB_TOKEN` — токен из шага 2
+Сеть ненадёжна: брокер может доставить одно сообщение дважды (при переподключении, ack-таймауте). Consumer должен *
+*безопасно обработать дубль**:
 
-Секреты зашифрованы и недоступны для чтения после сохранения. В логах Actions они автоматически маскируются (`***`).
+```kotlin
+@RabbitListener(queues = [RabbitConfig.ORDER_STATUS_QUEUE])
+fun handleOrderStatusChanged(event: OrderStatusChangedEvent) {
+    // Проверяем, не обрабатывали ли уже это событие
+    if (processedEventRepository.existsByOrderIdAndStatus(
+            event.orderId, event.newStatus
+        )
+    ) {
+        logger.warn { "Дубль события для заказа ${event.orderId}, пропускаем" }
+        return
+    }
 
-```yaml
-# .github/workflows/cd.yaml
-name: CD
-
-on:
-  push:
-    branches: [ main ]
-
-jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Log in to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/food-delivery:latest
+    notificationService.sendStatusChangedEmail(event)
+    processedEventRepository.save(ProcessedEvent(event.orderId, event.newStatus))
+}
 ```
 
-Образ будет доступен по адресу `docker.io/<ваш-логин>/food-delivery:latest`.
-
----
-
-#### Вариант B: GHCR (GitHub Container Registry)
-
-GHCR встроен в GitHub и не требует отдельного аккаунта. Каждый GitHub Actions workflow автоматически получает временный `GITHUB_TOKEN` — именно он используется для аутентификации.
-
-**Подготовка:** Никакой. Только добавьте `permissions` в файл workflow (см. ниже).
-
-```yaml
-# .github/workflows/cd.yaml
-name: CD
-
-on:
-  push:
-    branches: [ master ]
-
-permissions:
-  contents: read
-  packages: write
-
-jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ghcr.io/${{ github.repository_owner }}/food-delivery:latest
-```
-
-После успешного прогона образ появится в разделе **Packages** вашего GitHub-профиля.
-
----
-
-### 5) ci.yaml: проверьте триггер
-
-У вас уже есть `ci.yaml` с предыдущих работ. Убедитесь, что он запускается на pull request в основную ветку:
-
-```yaml
-on:
-  pull_request:
-    branches: [ master ]
-```
-
-Если стоит `push` или `workflow_dispatch` — замените или добавьте `pull_request`.
+Простейший способ — таблица `processed_events(order_id, new_status)` с уникальным индексом. Повторная попытка вставки
+бросит исключение → дубль обнаружен.
 
 ---
 
 ## Практическое задание
 
-### 1) SpringDoc
+### 1) Подключите RabbitMQ
 
-- Добавьте зависимость в `pom.xml`
-- Если настроена Spring Security — откройте пути Swagger UI в `SecurityFilterChain`
-- Аннотируйте минимум **3 эндпоинта**: `@Operation`, `@ApiResponse`
-- Убедитесь: `http://localhost:8080/swagger-ui.html` открывается и отображает ваш API
+1. Добавьте RabbitMQ в `docker-compose.yml` с healthcheck и Management UI.
+2. Добавьте зависимость `spring-boot-starter-amqp`.
+3. Вынесите параметры подключения в переменные окружения.
 
-### 2) Dockerfile
+### 2) Опишите инфраструктуру в конфигурации
 
-- Создайте `Dockerfile` в корне проекта (multi-stage: builder + runtime)
-- Создайте `.dockerignore`
-- Убедитесь: `docker build -t food-delivery .` завершается без ошибок
+1. Создайте `RabbitConfig` с topic exchange, двумя очередями и двумя binding-ами.
+2. Настройте `Jackson2JsonMessageConverter`.
+3. Объявите durable-очереди.
 
-### 3) docker-compose.yaml
+### 3) Определите доменные события
 
-- К существующему сервису `postgres` добавьте `app` и `pgadmin`
-- Добавьте `healthcheck` для postgres и `depends_on: condition: service_healthy` для app
-- Вынесите все переменные окружения в `.env`, добавьте `.env` в `.gitignore`, создайте `.env.example` с теми же ключами и пустыми значениями
-- Убедитесь: `docker compose up --build` поднимает все три сервиса, приложение стартует и отвечает на запросы
+Опишите события как отдельные data-классы. Подумайте, какие данные понадобятся consumer-у, чтобы обработать событие без
+дополнительных запросов в БД.
 
-### 4) cd.yaml
+### 4) Перейдите на событийную модель в OrderService
 
-- Создайте `.github/workflows/cd.yaml`
-- Выберите реестр: DockerHub или GHCR
-- Добавьте нужные секреты в GitHub (для DockerHub)
-- Сделайте push в основную ветку — workflow должен отработать, образ должен появиться в реестре
+1. Уберите прямую зависимость `OrderService` → `NotificationService`.
+2. При создании заказа — публикуйте событие через `RabbitTemplate`.
+3. При смене статуса — публикуйте событие через `RabbitTemplate`.
 
-### 5) ci.yaml
+### 5) Реализуйте consumer
 
-- Проверьте триггер — должен быть `pull_request` на основную ветку
-- Если нет — исправьте
+1. Создайте `@RabbitListener` для события смены статуса — пусть он отправляет email через `NotificationService` из
+   ЛР-10.
+2. Создайте `@RabbitListener` для события создания заказа — логику определите сами (логирование, подтверждение,
+   аналитика).
+
+### 6) Настройте надёжность
+
+1. Настройте DLQ для очереди смены статуса.
+2. Добавьте базовую идемпотентность: если событие уже обрабатывалось — пропустить.
 
 ---
 
 ## Критерии оценки (максимум 15 баллов)
 
-| Категория              | Критерий                                                                     | Баллы  |
-|:-----------------------|:-----------------------------------------------------------------------------|:------:|
-| SpringDoc              | Зависимость добавлена, Swagger UI открывается, аннотации на 3+ эндпоинтах   |   3    |
-| Dockerfile             | Multi-stage build, корректный ENTRYPOINT, `.dockerignore`                    |   4    |
-| docker-compose         | Сервисы app + pgAdmin, переменные через `.env`, `.env.example` в репозитории |   3    |
-| healthcheck + порядок  | `healthcheck` на postgres, `depends_on: condition: service_healthy` для app  |   3    |
-| cd.yaml                | Собирает образ и пушит в реестр (DockerHub или GHCR)                         |   2    |
-| **Итого**              |                                                                              | **15** |
-
-Штраф: `ci.yaml` не имеет триггера на `pull_request` — **−2 балла**.
+| Категория          | Критерий                                                                      | Баллы  |
+|:-------------------|:------------------------------------------------------------------------------|:------:|
+| Штраф              | Не проходят тесты из предыдущих ЛР                                            |   -5   |
+| RabbitMQ в compose | Поднимается с healthcheck, Management UI доступен                             |   1    |
+| Конфигурация       | Exchange, queues, bindings, JSON-конвертер, durable                           |   3    |
+| Доменные события   | Отдельные классы событий, содержат нужные данные                              |   2    |
+| Публикация         | OrderService публикует события, нет прямой зависимости на NotificationService |   3    |
+| Consumer           | @RabbitListener обрабатывает оба события                                      |   3    |
+| DLQ                | Dead Letter Queue настроен и работает                                         |   2    |
+| Идемпотентность    | Дубль события не приводит к повторной обработке                               |   1    |
+| **Итого**          |                                                                               | **15** |
 
 ---
 
 ## Мини-чеклист перед сдачей
 
-1. `docker build .` завершается без ошибок.
-2. `docker compose up --build` поднимает postgres + app + pgadmin.
-3. На сервисе `postgres` настроен `healthcheck`, сервис `app` стартует только после его прохождения (`depends_on: condition: service_healthy`).
-4. Переменные окружения вынесены в `.env`, в репозитории есть `.env.example`, `.env` в `.gitignore`.
-5. Swagger UI доступен по `/swagger-ui.html` и отображает эндпоинты.
-6. cd.yaml сработал при последнем push в main — образ виден в реестре.
-7. ci.yaml триггерится на `pull_request`.
+1. `docker compose up` поднимает RabbitMQ, Management UI открывается на `http://localhost:15672`.
+2. В Management UI видны exchange `order.exchange` и обе очереди.
+3. Смена статуса заказа → в логах consumer-а появляется запись об обработке → email отправляется.
+4. `OrderService` не импортирует `NotificationService`.
+5. При остановке consumer-а сообщения накапливаются в очереди и обрабатываются после его запуска.
+6. Повторная публикация того же события → consumer пропускает дубль (проверить по логам).
+7. Все тесты из предыдущих ЛР проходят.
 
 ---
 
 ## Что почитать
 
-1. [SpringDoc OpenAPI](https://springdoc.org/)
-2. [SpringDoc + Spring Security](https://springdoc.org/#spring-security-integration)
-3. [Swagger Annotations](https://github.com/swagger-api/swagger-core/wiki/Swagger-2.X---Annotations)
-4. [Dockerfile reference](https://docs.docker.com/reference/dockerfile/)
-5. [Docker multi-stage builds](https://docs.docker.com/build/building/multi-stage/)
-6. [Docker Compose reference](https://docs.docker.com/compose/compose-file/)
-7. [docker/login-action](https://github.com/docker/login-action)
-8. [docker/build-push-action](https://github.com/docker/build-push-action)
-9. [DockerHub access tokens](https://docs.docker.com/security/for-developers/access-tokens/)
-10. [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
+1. [RabbitMQ Tutorials](https://www.rabbitmq.com/tutorials)
+2. [Spring AMQP Reference](https://docs.spring.io/spring-amqp/reference/)
+3. [Spring Boot + RabbitMQ — Baeldung](https://www.baeldung.com/spring-amqp)
+4. [Dead Letter Exchanges — RabbitMQ](https://www.rabbitmq.com/docs/dlx)
+5. [Message Acknowledgements — RabbitMQ](https://www.rabbitmq.com/docs/confirms)
