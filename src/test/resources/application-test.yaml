@@ -5,6 +5,10 @@ spring:
     show-sql: false
   flyway:
     enabled: true
+  rabbitmq:
+    listener:
+      simple:
+        auto-startup: false
 
 logging:
   level:

@@ -2,9 +2,12 @@ package com.example.springjpa.application.service
 
 import com.example.springjpa.application.exception.InvalidOrderStateException
 import com.example.springjpa.application.exception.NotFoundException
+import com.example.springjpa.application.event.OrderEventPublisher
 import com.example.springjpa.application.port.DishRepositoryPort
 import com.example.springjpa.application.port.OrderRepositoryPort
 import com.example.springjpa.application.port.UserRepositoryPort
+import com.example.springjpa.domain.event.OrderCreatedEvent
+import com.example.springjpa.domain.event.OrderStatusChangedEvent
 import com.example.springjpa.domain.model.Dish
 import com.example.springjpa.domain.model.Order
 import com.example.springjpa.domain.model.OrderStatus
@@ -14,6 +17,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.extension.ExtendWith
 import org.mockito.InjectMocks
+import org.mockito.ArgumentCaptor
 import org.mockito.Mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
@@ -34,6 +38,9 @@ class OrderServiceTest {
     @Mock
     lateinit var dishRepositoryPort: DishRepositoryPort
 
+    @Mock
+    lateinit var orderEventPublisher: OrderEventPublisher
+
     @InjectMocks
     lateinit var orderService: OrderService
 
@@ -46,6 +53,7 @@ class OrderServiceTest {
         }
 
         verifyNoInteractions(dishRepositoryPort, orderRepositoryPort)
+        verifyNoInteractions(orderEventPublisher)
     }
 
     @Test
@@ -58,6 +66,7 @@ class OrderServiceTest {
         }
 
         verifyNoInteractions(orderRepositoryPort)
+        verifyNoInteractions(orderEventPublisher)
     }
 
     @Test
@@ -71,6 +80,15 @@ class OrderServiceTest {
         val result = orderService.create(3, listOf(1, 2, 1))
 
         assertEquals(created, result)
+        verify(orderEventPublisher).publishOrderCreated(
+            OrderCreatedEvent(
+                orderId = 10,
+                userId = 3,
+                userEmail = "user3@example.com",
+                dishIds = listOf(1L, 2L),
+                createdAt = created.createdAt,
+            ),
+        )
     }
 
     @Test
@@ -128,10 +146,21 @@ class OrderServiceTest {
         val updated = existing.copy(status = OrderStatus.CONFIRMED)
         `when`(orderRepositoryPort.findById(9)).thenReturn(existing)
         `when`(orderRepositoryPort.updateStatus(9, OrderStatus.CONFIRMED)).thenReturn(updated)
+        `when`(userRepositoryPort.findById(3)).thenReturn(user(3))
 
         val result = orderService.updateStatus(9, OrderStatus.CONFIRMED)
 
         assertEquals(updated, result)
+        val eventCaptor = ArgumentCaptor.forClass(OrderStatusChangedEvent::class.java)
+        verify(orderEventPublisher).publishOrderStatusChanged(
+            eventCaptor.capture() ?: OrderStatusChangedEvent(0, 0, "", OrderStatus.PENDING, OrderStatus.PENDING),
+        )
+        val event = eventCaptor.value
+        assertEquals(9, event.orderId)
+        assertEquals(3, event.userId)
+        assertEquals("user3@example.com", event.userEmail)
+        assertEquals(OrderStatus.PENDING, event.oldStatus)
+        assertEquals(OrderStatus.CONFIRMED, event.newStatus)
     }
 
     private fun user(id: Long) =

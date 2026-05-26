@@ -2,9 +2,12 @@ package com.example.springjpa.application.service
 
 import com.example.springjpa.application.exception.InvalidOrderStateException
 import com.example.springjpa.application.exception.NotFoundException
+import com.example.springjpa.application.event.OrderEventPublisher
 import com.example.springjpa.application.port.DishRepositoryPort
 import com.example.springjpa.application.port.OrderRepositoryPort
 import com.example.springjpa.application.port.UserRepositoryPort
+import com.example.springjpa.domain.event.OrderCreatedEvent
+import com.example.springjpa.domain.event.OrderStatusChangedEvent
 import com.example.springjpa.domain.model.Order
 import com.example.springjpa.domain.model.OrderStatus
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -15,11 +18,13 @@ class OrderService(
     private val orderRepositoryPort: OrderRepositoryPort,
     private val userRepositoryPort: UserRepositoryPort,
     private val dishRepositoryPort: DishRepositoryPort,
+    private val orderEventPublisher: OrderEventPublisher,
 ) {
     private val logger = KotlinLogging.logger {}
 
     fun create(userId: Long, dishIds: List<Long>): Order {
-        if (userRepositoryPort.findById(userId) == null) {
+        val user = userRepositoryPort.findById(userId)
+        if (user == null) {
             logger.warn { "User with id=$userId not found while creating order" }
             throw IllegalArgumentException("User with id=$userId not found")
         }
@@ -33,6 +38,15 @@ class OrderService(
 
         val created = orderRepositoryPort.create(userId, uniqueDishIds, OrderStatus.PENDING)
         logger.info { "Order created: id=${created.id}, userId=${created.userId}, dishes=${uniqueDishIds.size}" }
+        orderEventPublisher.publishOrderCreated(
+            OrderCreatedEvent(
+                orderId = created.id,
+                userId = created.userId,
+                userEmail = user.email,
+                dishIds = uniqueDishIds,
+                createdAt = created.createdAt,
+            ),
+        )
         return created
     }
 
@@ -55,6 +69,19 @@ class OrderService(
                 logger.warn { "Order with id=$id not found during status update write" }
             }
         logger.info { "Order status updated: id=$id, from=${existing.status}, to=${updated.status}" }
+        val user = userRepositoryPort.findById(updated.userId)
+            ?: throw NotFoundException("User with id=${updated.userId} not found").also {
+                logger.warn { "User with id=${updated.userId} not found for status event" }
+            }
+        orderEventPublisher.publishOrderStatusChanged(
+            OrderStatusChangedEvent(
+                orderId = updated.id,
+                userId = updated.userId,
+                userEmail = user.email,
+                oldStatus = existing.status,
+                newStatus = updated.status,
+            ),
+        )
         return updated
     }
 
