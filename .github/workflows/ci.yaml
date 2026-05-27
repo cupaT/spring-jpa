@@ -1,6 +1,9 @@
 name: Spring boot CI
 
 on:
+  push:
+    branches:
+      - laba12
   pull_request:
     branches:
       - master
@@ -20,17 +23,8 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Grant scripts permition
-        run: chmod +x ./mvnw ./.test/run-test.sh
-
       - name: Compile Spring app
-        run: ./mvnw clean package
+        run: ./mvnw clean
 
-      - name: Run Spring app
-        run: java -jar ./target/*.jar &
-
-      - name: Run tests
-        run: ./.test/run-test.sh
+      - name: Run Spring app tests
+        run: ./mvnw test
