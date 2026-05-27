@@ -4,6 +4,7 @@ import com.example.springjpa.application.exception.AlreadyExistsException
 import com.example.springjpa.application.exception.AppException
 import com.example.springjpa.application.exception.InvalidOrderStateException
 import com.example.springjpa.application.exception.NotFoundException
+import com.example.springjpa.application.exception.OrderCreationException
 import com.example.springjpa.web.dto.ErrorResponse
 import com.example.springjpa.web.dto.ValidationErrorResponse
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -29,6 +30,7 @@ class GlobalExceptionHandler {
             is NotFoundException -> HttpStatus.NOT_FOUND
             is AlreadyExistsException -> HttpStatus.CONFLICT
             is InvalidOrderStateException -> HttpStatus.BAD_REQUEST
+            is OrderCreationException -> HttpStatus.BAD_REQUEST
         }
         if (status == HttpStatus.NOT_FOUND) {
             logger.warn { ex.message ?: "Resource not found" }

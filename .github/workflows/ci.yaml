@@ -3,7 +3,7 @@ name: Spring boot CI
 on:
   push:
     branches:
-      - laba11
+      - laba12
   pull_request:
     branches:
       - master

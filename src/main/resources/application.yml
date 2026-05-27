@@ -32,3 +32,31 @@ spring:
 jwt:
   secret: ${JWT_SECRET}
   expiration-ms: ${JWT_EXPIRATION:86400000}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+      path-mapping:
+        prometheus: prometheus-native
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  info:
+    env:
+      enabled: true
+  health:
+    mail:
+      enabled: false
+
+info:
+  app:
+    name: food-delivery
+    version: '@project.version@'

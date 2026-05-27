@@ -2,6 +2,7 @@ package com.example.springjpa.application.service
 
 import com.example.springjpa.application.exception.InvalidOrderStateException
 import com.example.springjpa.application.exception.NotFoundException
+import com.example.springjpa.application.exception.OrderCreationException
 import com.example.springjpa.application.event.OrderEventPublisher
 import com.example.springjpa.application.port.DishRepositoryPort
 import com.example.springjpa.application.port.OrderRepositoryPort
@@ -10,6 +11,7 @@ import com.example.springjpa.domain.event.OrderCreatedEvent
 import com.example.springjpa.domain.event.OrderStatusChangedEvent
 import com.example.springjpa.domain.model.Order
 import com.example.springjpa.domain.model.OrderStatus
+import com.example.springjpa.monitoring.TrackOrderProcessing
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
 
@@ -22,7 +24,13 @@ class OrderService(
 ) {
     private val logger = KotlinLogging.logger {}
 
+    @TrackOrderProcessing
     fun create(userId: Long, dishIds: List<Long>): Order {
+        if (dishIds.isEmpty()) {
+            logger.warn { "Empty dish list while creating order for userId=$userId" }
+            throw IllegalArgumentException("Dish list must not be empty")
+        }
+
         val user = userRepositoryPort.findById(userId)
         if (user == null) {
             logger.warn { "User with id=$userId not found while creating order" }
@@ -34,6 +42,10 @@ class OrderService(
         if (existingDishes.size != uniqueDishIds.size) {
             logger.warn { "One or more dishes not found while creating order. requested=$uniqueDishIds" }
             throw IllegalArgumentException("One or more dishes not found")
+        }
+        if (existingDishes.any { !it.isAvailable }) {
+            logger.warn { "One or more dishes unavailable while creating order. requested=$uniqueDishIds" }
+            throw OrderCreationException("stock_empty", "One or more dishes are unavailable")
         }
 
         val created = orderRepositoryPort.create(userId, uniqueDishIds, OrderStatus.PENDING)

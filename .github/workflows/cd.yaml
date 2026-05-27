@@ -5,7 +5,7 @@ on:
     branches:
       - master
       - main
-      - laba11
+      - laba12
   pull_request:
     branches:
       - master
